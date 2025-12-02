@@ -1,5 +1,6 @@
 #! /usr/bin/python
 
+import time
 import agent
 import cell
 import condition
@@ -13,6 +14,8 @@ import math
 import random
 import re
 import sys
+import io
+import logging
 
 class Sugarscape:
     def __init__(self, configuration):
@@ -77,7 +80,8 @@ class Sugarscape:
         # TODO: Streamline naming
         self.runtimeStats = {"timestep": 0, "population": 0, "meanMetabolism": 0, "meanMovement": 0, "meanVision": 0, "meanWealth": 0, "meanAge": 0, "giniCoefficient": 0,
                              "meanTradePrice": 0, "tradeVolume": 0, "maxWealth": 0, "minWealth": 0, "meanHappiness": 0, "meanWealthHappiness": 0, "meanHealthHappiness": 0,
-                             "meanSocialHappiness": 0, "meanFamilyHappiness": 0, "meanConflictHappiness": 0, "meanAgeAtDeath": 0, "seed": self.seed, "agentsReplaced": 0,
+                             "meanSocialHappiness": 0, "meanFamilyHappiness": 0, "meanConflictHappiness": 0, "meanSpaceHappiness": 0, "meanFoodSecurityHappiness": 0,
+                             "meanAgeAtDeath": 0, "seed": self.seed, "agentsReplaced": 0,
                              "agentsBorn": 0, "agentStarvationDeaths": 0, "agentDiseaseDeaths": 0, "environmentWealthCreated": 0, "agentWealthTotal": 0,
                              "environmentWealthTotal": 0, "agentWealthCollected": 0, "agentWealthBurnRate": 0, "agentMeanTimeToLive": 0, "agentTotalMetabolism": 0,
                              "agentCombatDeaths": 0, "agentAgingDeaths": 0, "agentDeaths": 0, "largestRace": 0, "largestTribe": 0, "largestRaceSize": 0, "largestTribeSize": 0,
@@ -115,6 +119,24 @@ class Sugarscape:
                                                  "tradeExperimentalGroupToControlGroup": 0, "tradeExperimentalGroupToExperimentalGroup": 0
                                                  }
             self.runtimeStats.update(self.groupInteractionRuntimeStats)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # gui holds tkinter objects and cant be deepcopied
+        state["gui"] = None
+
+        # remove open file handles (TextIOWrapper etc)
+        for k, v in list(state.items()):
+            if isinstance(v, io.IOBase):
+                state[k] = None
+            # logging objects often hold streams too
+            if isinstance(v, logging.Logger):
+                state[k] = None
+
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
 
     def addAgent(self, agent):
         self.bornAgents.append(agent)
@@ -191,41 +213,60 @@ class Sugarscape:
             agentConfiguration = self.agentEndowments[self.agentEndowmentIndex % len(self.agentEndowments)]
             self.agentEndowmentIndex += 1
             agentID = self.generateAgentID()
-            a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
-            if self.configuration["agentLeader"] == True and self.agentLeader == None:
-                a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
+
+            isLeaderSpawn = (self.configuration['agentLeader'] == True and self.agentLeader is None)
+
+            if isLeaderSpawn:
+
                 cornerCell = self.environment.grid[0][0]
-                a.gotoCell(cornerCell)
+                # If corner is occupied, find the first empty cell scanning from top left
+                if cornerCell.agent is not None:
+                    found = None
+                    for y in range(self.environment.height):
+                        for x in range(self.environment.width):
+                            c = self.environment.grid[x][y]
+                            if c.agent is None:
+                                found = c
+                                break
+                        if found is not None:
+                            break
+                    cornerCell = found if found is not None else cornerCell
+
+                placementCell = cornerCell
+                a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
                 self.agentLeader = a
+            else:
+                a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
+                dm = agentConfiguration['decisionModel']
 
-            # If using a different decision model, replace new agent with instance of child class
-            if "altruist" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = 0
-            elif "bentham" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                if agentConfiguration["selfishnessFactor"] < 0:
-                    a.selfishnessFactor = 0.5
-            elif "egoist" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = 1
-            elif "negativeBentham" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = -1
-            elif "temperance" in agentConfiguration["decisionModel"]:
-                a = ethics.Temperance(agentID, self.timestep, placementCell, agentConfiguration)
+                # If using a different decision model, replace new agent with instance of child class
+                if "altruist" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = 0
+                elif "bentham" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    if agentConfiguration["selfishnessFactor"] < 0:
+                        a.selfishnessFactor = 0.5
+                elif "egoist" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = 1
+                elif "negativeBentham" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = -1
+                elif "temperance" in agentConfiguration["decisionModel"]:
+                    a = ethics.Temperance(agentID, self.timestep, placementCell, agentConfiguration)
 
-            # If dynamic selfishness is desired but not defined, give a small degree of dynamic selfishness
-            if "Dynamic" in agentConfiguration["decisionModel"] and self.configuration["agentDynamicSelfishnessFactor"] == [0.0, 0.0]:
-                a.dynamicSelfishnessFactor = 0.01
-            if "NoLookahead" in agentConfiguration["decisionModel"]:
-                a.decisionModelLookaheadFactor = 0
-            elif "HalfLookahead" in agentConfiguration["decisionModel"]:
-                a.decisionModelLookaheadFactor = 0.5
+                # If dynamic selfishness is desired but not defined, give a small degree of dynamic selfishness
+                if "Dynamic" in agentConfiguration["decisionModel"] and self.configuration["agentDynamicSelfishnessFactor"] == [0.0, 0.0]:
+                    a.dynamicSelfishnessFactor = 0.01
+                if "NoLookahead" in agentConfiguration["decisionModel"]:
+                    a.decisionModelLookaheadFactor = 0
+                elif "HalfLookahead" in agentConfiguration["decisionModel"]:
+                    a.decisionModelLookaheadFactor = 0.5
 
-            # If using a deontological decision model, replace new agent with instance of child class
-            if "asimov" in agentConfiguration["decisionModel"]:
-                a = ethics.Asimov(agentID, self.timestep, placementCell, agentConfiguration)
+                # If using a deontological decision model, replace new agent with instance of child class
+                if "asimov" in agentConfiguration["decisionModel"]:
+                    a = ethics.Asimov(agentID, self.timestep, placementCell, agentConfiguration)
 
             # If using a virtue ethics decision model, replace new agent with instance of child class
             if "temperance" in agentConfiguration["decisionModel"]:
@@ -852,7 +893,13 @@ class Sugarscape:
             if self.configuration["screenshots"] == True and self.configuration["headlessMode"] == False:
                 self.gui.canvas.postscript(file=f"screenshot{screenshots}.ps", colormode="color")
                 screenshots += 1
+
+            stepStart = time.perf_counter()
+
             self.doTimestep()
+
+            stepDuration = time.perf_counter() - stepStart
+            
             t += 1
             if self.gui != None and self.run == False:
                 self.pauseSimulation()
@@ -989,12 +1036,14 @@ class Sugarscape:
         meanAge = 0
         meanConflictHappiness = 0
         meanFamilyHappiness = 0
+        meanFoodSecurityHappiness = 0
         meanHappiness = 0
         meanHealthHappiness = 0
         meanMetabolism = 0
         meanMovement = 0
         meanSelfishness = 0
         meanSocialHappiness = 0
+        meanSpaceHappiness = 0
         meanSpiceMetabolism = 0
         meanSugarMetabolism = 0
         combinedMetabolism = 0
@@ -1002,6 +1051,7 @@ class Sugarscape:
         meanVision = 0
         meanWealth = 0
         meanWealthHappiness = 0
+        meanFoodSecurityHappiness = 0
         minWealth = sys.maxsize
         numAgents = 0
         numTraders = 0
@@ -1069,6 +1119,11 @@ class Sugarscape:
         races = {}
         remainingTribes = 0
         tribes = {}
+
+        cultDensity = 0
+        leaderAgent = None
+        leaderDecisionTime = 0.0
+        leaderPlacementOptions = 0
         
         meanNeighbors = 0
         meanControlNeighbors = 0
@@ -1080,6 +1135,13 @@ class Sugarscape:
         for agent in self.agents:
             if group != None and agent.isInGroup(group, notInGroup) == False:
                 continue
+
+            if hasattr(agent, "lastDecisionTime"):
+                leaderDecisionTime = agent.lastDecisionTime
+                leaderPlacementOptions = agent.lastPlacementOptions
+                leaderAgent = agent
+                continue
+
             agentTimeToLive = agent.findTimeToLive()
             agentTimeToLiveAgeLimited = agent.findTimeToLive(True)
             agentWealth = agent.sugar + agent.spice
@@ -1096,6 +1158,8 @@ class Sugarscape:
             meanFamilyHappiness += agent.familyHappiness
             meanSocialHappiness += agent.socialHappiness
             meanConflictHappiness += agent.conflictHappiness
+            meanFoodSecurityHappiness += agent.foodSecurityHappiness
+            meanSpaceHappiness += agent.spaceHappiness
             if agent.tradeVolume > 0:
                 meanTradePrice += max(agent.spicePrice, agent.sugarPrice)
                 tradeVolume += agent.tradeVolume
@@ -1175,6 +1239,26 @@ class Sugarscape:
                     diseaseIncidence += 1
                     if self.timestep != 0:
                         infectors.add(disease["infector"])
+
+        if leaderAgent != None:
+            gridWidth = self.environment.width
+            gridHeight = self.environment.height
+            
+            for agent in self.agents:
+                # Skip checking the leader against itself
+                if agent == leaderAgent:
+                    continue
+                    
+                # Calculate distance with map
+                dx = abs(leaderAgent.cell.x - agent.cell.x)
+                dx = min(dx, gridWidth - dx)
+                
+                dy = abs(leaderAgent.cell.y - agent.cell.y)
+                dy = min(dy, gridHeight - dy)
+                
+                # If agent is within a 2 cell difference
+                if max(dx, dy) <= 2:
+                    cultDensity += 1
 
         numDeadAgents = 0
         meanAgeAtDeath = 0
@@ -1264,6 +1348,8 @@ class Sugarscape:
             meanSelfishness = round(meanSelfishness / numAgents, 2)
             meanSocialHappiness = round(meanSocialHappiness / numAgents, 2)
             meanTradePrice = round(meanTradePrice / numTraders, 2) if numTraders > 0 else 0
+            meanFoodSecurityHappiness = round(meanFoodSecurityHappiness / numAgents, 2)
+            meanSpaceHappiness = round(meanSpaceHappiness / numAgents, 2)
             meanVision = round(meanVision / numAgents, 2)
             meanWealth = round(meanWealth / numAgents, 2)
             meanWealthHappiness = round(meanWealthHappiness / numAgents, 2)
@@ -1318,7 +1404,10 @@ class Sugarscape:
             agentsBorn += 1
 
         # TODO: make clear whether agent or environment calculation
-        runtimeStats = {"agentAgingDeaths": agentAgingDeaths, "agentCombatDeaths": agentCombatDeaths, "agentDeaths": numDeadAgents,
+        runtimeStats = {"leaderDecisionTime": round(leaderDecisionTime, 4),
+                        "leaderPlacementOptions": leaderPlacementOptions,
+                        "cultDensity": cultDensity,
+                        "agentAgingDeaths": agentAgingDeaths, "agentCombatDeaths": agentCombatDeaths, "agentDeaths": numDeadAgents,
                         "agentDiseaseDeaths": agentDiseaseDeaths, "agentMeanTimeToLive": agentMeanTimeToLive, "agentsBorn": agentsBorn,
                         "agentsReplaced": agentsReplaced, "agentStarvationDeaths": agentStarvationDeaths, "agentTotalMetabolism": agentTotalMetabolism,
                         "agentWealthBurnRate": agentWealthBurnRate, "agentWealthCollected": agentWealthCollected, "agentWealthTotal": agentWealthTotal,
@@ -1326,6 +1415,7 @@ class Sugarscape:
                         "largestTribe": maxTribe, "largestTribeSize": maxTribeSize, "maxWealth": maxWealth,
                         "meanAge": meanAge, "meanAgeAtDeath": meanAgeAtDeath, "meanConflictHappiness": meanConflictHappiness,
                         "meanFamilyHappiness": meanFamilyHappiness, "meanHappiness": meanHappiness, "meanHealthHappiness": meanHealthHappiness,
+                        "meanFoodSecurityHappiness": meanFoodSecurityHappiness, "meanSpaceHappiness": meanSpaceHappiness,
                         "meanMetabolism": meanMetabolism, "meanMovement": meanMovement, "meanMoveDifferenceFromOptimal": meanMoveDifferenceFromOptimal,
                         "meanMoveRank": meanMoveRank, "meanNeighbors": meanNeighbors, "meanSelfishness": meanSelfishness,
                         "meanSocialHappiness": meanSocialHappiness, "meanTradePrice": meanTradePrice, "meanWealth": meanWealth,

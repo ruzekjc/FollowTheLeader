@@ -1,5 +1,7 @@
 import math
 import random
+import io
+import logging
 
 class Environment:
     # Assumption: grid is always indexed by [width][height]
@@ -40,6 +42,18 @@ class Environment:
 
         # Populate grid with NoneType objects
         self.grid = [[None for j in range(height)]for i in range(width)]
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        for k, v in list(state.items()):
+            if isinstance(v, io.IOBase):
+                state[k] = None
+            if isinstance(v, logging.Logger):
+                state[k] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
 
     def createDistanceTable(self, maxDeltaX, maxDeltaY):
         distanceTable = {}

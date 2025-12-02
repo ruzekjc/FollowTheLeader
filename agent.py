@@ -107,6 +107,7 @@ class Agent:
         self.race = self.findRace()
         self.socialHappiness = 0
         self.socialNetwork = {"father": None, "mother": None, "children": [], "friends": [], "creditors": [], "debtors": [], "mates": []}
+        self.spaceHappiness = 0
         self.spiceMeanIncome = 1
         self.spiceMetabolismModifier = 0
         self.spicePrice = 0
@@ -120,6 +121,7 @@ class Agent:
         self.tribe = self.findTribe()
         self.visionModifier = 0
         self.wealthHappiness = 0
+        self.foodSecurityHappiness = 0
         self.validMoves = []
 
         self.combatWithControlGroup = 0
@@ -571,6 +573,7 @@ class Agent:
             # Bookkeeping before performing actions
             self.lastSugar = self.sugar
             self.lastSpice = self.spice
+
             # Beginning of timestep actions
             self.moveToBestCell()
             self.updateNeighbors()
@@ -992,7 +995,7 @@ class Agent:
         return hammingDistance
 
     def findHappiness(self):
-        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness
+        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness + self.spaceHappiness
 
     def findHealthHappiness(self):
         if self.isSick():
@@ -1147,6 +1150,16 @@ class Agent:
         diffWealth *= self.happinessUnit
         return math.erf(diffWealth)
 
+    def findFoodSecurityHappiness(self):
+        diffTTL = self.findTimeToLive(False) - self.lastTimeToLive
+        return math.erf(diffTTL * self.happinessUnit)
+
+    def findSpaceHappiness(self):
+        step = 2 / len(self.cellsInRange)
+        occupiedRate = (len(self.neighborhood) - 1) * step
+        spaceHappiness = -1 * (occupiedRate - 1)
+        return spaceHappiness * self.happinessUnit
+
     def findWelfare(self, sugarReward, spiceReward):
         spiceMetabolism = self.findSpiceMetabolism()
         sugarMetabolism = self.findSugarMetabolism()
@@ -1278,7 +1291,7 @@ class Agent:
             return False
 
     def isNeighborValidPrey(self, neighbor):
-        if neighbor == None or self.findAggression() <= 0:
+        if neighbor == None or self.findAggression() <= 0 or getattr(neighbor, "leader", False):
             return False
         elif self.tribe != neighbor.tribe and self.sugar + self.spice >= neighbor.sugar + neighbor.spice:
             return True
@@ -1500,6 +1513,8 @@ class Agent:
         self.healthHappiness = self.findHealthHappiness()
         self.socialHappiness = self.findSocialHappiness()
         self.wealthHappiness = self.findWealthHappiness()
+        self.foodSecurityHappiness = self.findFoodSecurityHappiness()
+        self.spaceHappiness = self.findSpaceHappiness()
         self.happiness = self.findHappiness()
 
     def updateLoans(self):
