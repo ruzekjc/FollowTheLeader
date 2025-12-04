@@ -1,5 +1,4 @@
 import agent
-
 import random
 import sys
 
@@ -256,16 +255,37 @@ class Leader(agent.Agent):
         placedAgents = []
         for i in range(width):
             for j in range(height):
-                if len(self.grid[i][j]) == 0:
+                cellCandidates = self.grid[i][j]
+                if not cellCandidates:
                     continue
-                sorted(self.grid[i][j], key=lambda agentRecord: agentRecord["urgency"])
-                agent = self.grid[i][j].pop()["agent"]
+
+                # Jada Improvement 1a: fixing non-functional urgency sorting
+                # now sorts the list in place and will actually pop the most urgent remaining agent first
+                cellCandidates.sort(key=lambda rec: rec["urgency"])
+                currentAgent = None
                 cell = self.cell.environment.grid[i][j]
-                invalidCell = cell.isOccupied() and agent.isNeighborValidPrey(cell.agent) == False
-                while len(self.grid[i][j]) > 0 and (agent in placedAgents or agent.isAlive() == False or invalidCell == True) and len(self.grid[i][j]):
-                    agent = self.grid[i][j].pop()["agent"]
-                    invalidCell = cell.isOccupied() and agent.isNeighborValidPrey(cell.agent) == False
+
+                while cellCandidates:
+                    agent_record = cellCandidates.pop(0)
+                    candidate = agent_record["agent"]
+
+                    invalidCell = cell.isOccupied() and candidate.isNeighborValidPrey(cell.agent) == False
+
+                    # Jada Improvement 1b: checking if we have already run out of candidates for that cell so we can skip it
+                    if candidate in placedAgents or candidate.isAlive() == False or invalidCell:
+                        continue
+
+                    currentAgent = candidate
+                    break
+                
+                if currentAgent is None:
+                    continue
+
                 self.agentPlacements[agent.ID] = cell
+
+                # Jada Improvement 1c: makign sure we track which agents have already been assigned a cell this timestep
+                # (so no agent is assigned >1 place to move)
+                placedAgents.append(currentAgent)
 
         # Leader agent should not move
         return self.cell
