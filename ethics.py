@@ -247,10 +247,28 @@ class Leader(agent.Agent):
             urgency = self.findUrgencyForAgent(agent)
             viableCells = self.findViableCellsForAgent(agent)
             for cell in viableCells:
-                self.grid[cell.x][cell.y].append({"agent": agent, "urgency": urgency})
+
+                # Jada Improvement 2a: adding the calculation of ethical value
+                ethicalValue = self.findLeaderEthicalValueOfCell(agent, cell)
+                self.grid[cell.x][cell.y].append({
+                    "agent": agent, 
+                    "urgency": urgency,
+                    "ethicalValue": ethicalValue
+                    })
 
         width = self.cell.environment.width
         height = self.cell.environment.height
+        env = self.cell.environment
+
+        # Jada Improvement 3: Sort Cells by Wealth
+        allCells = []
+        for i in range(width):
+            for j in range(height):
+                cell = env.grid[i][j]
+                cellWealth = cell.sugar + cell.spice
+                allCells.append((cellWealth, i, j))
+
+        allCells.sort(reverse=True, key=lambda tup: tup[0])
 
         placedAgents = []
         for i in range(width):
@@ -261,7 +279,8 @@ class Leader(agent.Agent):
 
                 # Jada Improvement 1a: fixing non-functional urgency sorting
                 # now sorts the list in place and will actually pop the most urgent remaining agent first
-                cellCandidates.sort(key=lambda rec: rec["urgency"])
+                # Jada Improvement 2b: updating the Leader's ordering
+                cellCandidates.sort(key=lambda rec: (rec["urgency"], -rec["ethicalValue"]))
                 currentAgent = None
                 cell = self.cell.environment.grid[i][j]
 
@@ -301,6 +320,33 @@ class Leader(agent.Agent):
         timeToLive = agent.findTimeToLive()
         # Lower score yields higher urgency
         return diseased + happiness + timeToLive
+    
+
+    # Jada Improvement 2a: Ethical Evaluation of agent assignment
+    # - reusing Bentham class terminology + logic but modified for global allocation
+    def findLeaderEthicalValueOfCell(self, agent, cell):
+        cellSiteWealth = cell.sugar + cell.spice
+
+        neighborMetabolism = agent.sugarMetabolism + agent.spiceMetabolism
+
+        if neighborMetabolism > 0:
+            cellDuration = cellSiteWealth / neighborMetabolism
+        else:
+            cellDuration = 0
+
+        intensity = 1 / ((1 + agent.findTimeToLive()) * (1 + cell.pollution))
+
+        cellsInRange = len(agent.cellsInRange) if hasattr(agent, "cellsInRange") else 1
+        neighborhoodSize = cellsInRange if cellsInRange > 0 else 1
+        extent = neighborhoodSize / max(1, len(self.cell.environment.sugarscape.agents))
+
+        currentReward = extent * (intensity + cellDuration)
+        happiness = currentReward
+        unhappiness = 0
+
+        cellValue = happiness - abs(unhappiness)
+
+        return cellValue
 
     def findViableCellsForAgent(self, agent):
         agent.findCellsInRange()
