@@ -265,14 +265,16 @@ class Leader(agent.Agent):
         for i in range(width):
             for j in range(height):
                 cell = env.grid[i][j]
-                cellWealth = cell.sugar + cell.spice
+
+                alpha = 0.5
+                cellWealth = (cell.sugar + cell.spice) - alpha * cell.pollution
                 allCells.append((cellWealth, i, j))
 
+        random.shuffle(allCells)
         allCells.sort(reverse=True, key=lambda tup: tup[0])
 
         placedAgents = []
-        for i in range(width):
-            for j in range(height):
+        for cellWealth, i, j in allCells:
                 cellCandidates = self.grid[i][j]
                 if not cellCandidates:
                     continue
@@ -300,7 +302,7 @@ class Leader(agent.Agent):
                 if currentAgent is None:
                     continue
 
-                self.agentPlacements[agent.ID] = cell
+                self.agentPlacements[currentAgent.ID] = cell
 
                 # Jada Improvement 1c: makign sure we track which agents have already been assigned a cell this timestep
                 # (so no agent is assigned >1 place to move)
@@ -327,10 +329,10 @@ class Leader(agent.Agent):
     def findLeaderEthicalValueOfCell(self, agent, cell):
         cellSiteWealth = cell.sugar + cell.spice
 
-        neighborMetabolism = agent.sugarMetabolism + agent.spiceMetabolism
+        metabolism = agent.sugarMetabolism + agent.spiceMetabolism
 
-        if neighborMetabolism > 0:
-            cellDuration = cellSiteWealth / neighborMetabolism
+        if metabolism > 0:
+            cellDuration = cellSiteWealth / metabolism
         else:
             cellDuration = 0
 
@@ -340,7 +342,7 @@ class Leader(agent.Agent):
         neighborhoodSize = cellsInRange if cellsInRange > 0 else 1
         extent = neighborhoodSize / max(1, len(self.cell.environment.sugarscape.agents))
 
-        currentReward = extent * (intensity + cellDuration)
+        currentReward = extent * (2 * intensity + cellDuration)
         happiness = currentReward
         unhappiness = 0
 
