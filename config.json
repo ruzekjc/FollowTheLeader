@@ -97,7 +97,7 @@
         "environmentWidth": 50,
         "environmentWraparound": true,
         "experimentalGroup": null,
-        "headlessMode": true,
+        "headlessMode": false,
         "interfaceHeight": 1400,
         "interfaceWidth": 1200,
         "keepAlivePostExtinction": false,
