@@ -226,6 +226,8 @@ class Leader(agent.Agent):
         self.tradeFactor = 0.0
         self.vision = max(self.cell.environment.height, self.cell.environment.width)
 
+        self.plannedTimestep = None
+
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
         # Consider being the last one left alive as an aging death for the leader
@@ -237,84 +239,20 @@ class Leader(agent.Agent):
         env = self.cell.environment
         agents = env.sugarscape.agents
 
-    def findBestCell(self):
-        self.resetForTimestep()
-        agents = self.cell.environment.sugarscape.agents
-        agentsByNeed = []
-        for agent in agents:
-            if agent.isAlive() == False or agent == self:
-                continue
-            urgency = self.findUrgencyForAgent(agent)
-            viableCells = self.findViableCellsForAgent(agent)
-            for cell in viableCells:
-
-                # Jada Improvement 2a: adding the calculation of ethical value
-                ethicalValue = self.findLeaderEthicalValueOfCell(agent, cell)
-                self.grid[cell.x][cell.y].append({
-                    "agent": agent, 
-                    "urgency": urgency,
-                    "ethicalValue": ethicalValue
-                    })
-
-        width = self.cell.environment.width
-        height = self.cell.environment.height
-        env = self.cell.environment
-
-        # Jada Improvement 3: Sort Cells by Wealth
-        allCells = []
-        for i in range(width):
-            for j in range(height):
-                cell = env.grid[i][j]
-
-                alpha = 0.5
-                cellWealth = (cell.sugar + cell.spice) - alpha * cell.pollution
-                allCells.append((cellWealth, i, j))
-
-        random.shuffle(allCells)
-        allCells.sort(reverse=True, key=lambda tup: tup[0])
-
-        placedAgents = []
-        for cellWealth, i, j in allCells:
-                cellCandidates = self.grid[i][j]
-                if not cellCandidates:
-                    continue
-
-                # Jada Improvement 1a: fixing non-functional urgency sorting
-                # now sorts the list in place and will actually pop the most urgent remaining agent first
-                # Jada Improvement 2b: updating the Leader's ordering
-                cellCandidates.sort(key=lambda rec: (rec["urgency"], -rec["ethicalValue"]))
-                currentAgent = None
-                cell = self.cell.environment.grid[i][j]
-
-                while cellCandidates:
-                    agent_record = cellCandidates.pop(0)
-                    candidate = agent_record["agent"]
-
-                    invalidCell = cell.isOccupied() and candidate.isNeighborValidPrey(cell.agent) == False
-
-                    # Jada Improvement 1b: checking if we have already run out of candidates for that cell so we can skip it
-                    if candidate in placedAgents or candidate.isAlive() == False or invalidCell:
-                        continue
-
-                    currentAgent = candidate
-                    break
-                
-                if currentAgent is None:
-                    continue
-
-                self.agentPlacements[currentAgent.ID] = cell
-
-                # Jada Improvement 1c: makign sure we track which agents have already been assigned a cell this timestep
-                # (so no agent is assigned >1 place to move)
-                placedAgents.append(currentAgent)
+    def findBestCell(self):\
+        # no more grid-based algorithms
+        timestep = self.cell.environment.sugarscape.timestep
+        self.planPlacements(timestep)
 
         # Leader agent should not move
         return self.cell
 
     def findBestCellForAgent(self, agent):
-        if agent.ID not in self.agentPlacements:
-            return agent.cell
-        return self.agentPlacements[agent.ID]
+        timestep = self.cell.environment.sugarscape.timestep
+        if self.plannedTimestep != timestep:
+            self.planPlacements(timestep)
+
+        return self.agentPlacements.get(agent.ID,agent.cell)
 
     def findUrgencyForAgent(self, agent):
         diseased = 0 if agent.isSick() else 1
@@ -355,23 +293,87 @@ class Leader(agent.Agent):
         viableCells = []
         spiceMetabolism = agent.findSpiceMetabolism()
         sugarMetabolism = agent.findSugarMetabolism()
-        for cell in agent.cellsInRange:
+        for cell in agent.cellsInRange.keys():
             viableSpice = agent.spice + cell.spice - spiceMetabolism
             viableSugar = agent.sugar + cell.sugar - sugarMetabolism
             if viableSpice > 0 and viableSugar > 0:
                 viableCells.append(cell)
         return viableCells
+    
 
-    def resetForTimestep(self):
+    def resetForTimestep(self, timestep):
         # Always ensure leader has maximum resources each timestep
         self.spice = sys.maxsize
         self.sugar = sys.maxsize
-        self.grid = [[[] for j in range(self.cell.environment.height) ] for i in range(self.cell.environment.width)]
+
+        print("RESET", timestep, "size", self.cell.environment.width, self.cell.environment.height)
+
         #self.grid[self.cell.x][self.cell.y] = self
         self.agentPlacements = {self.ID: self.cell}
+        self.plannedTimestep = timestep
 
-    def spawnChild(self, childID, birthday, cell, configuration):
-        return Leader(childID, birthday, cell, configuration)
+    # Jada Improvement 3: new method to greedily match agents with cells to move to
+    def planPlacements(self, timestep):
+        self.resetForTimestep(timestep)
+
+        env = self.cell.environment
+        agents = env.sugarscape.agents
+
+        # list of (urgency, -combinedScore, tie, agent, cell)
+        cellCandidates = []
+
+        for a in agents:
+            if a == self or not a.isAlive():
+                continue
+
+            urgency = self.findUrgencyForAgent(a)
+            viableCells = self.findViableCellsForAgent(a)
+
+            # If nothing viable, allow staying put
+            if not viableCells:
+                viableCells = [a.cell]
+
+            for c in viableCells:
+                # Skip illegal occupied cells (unless prey is valid)
+                if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
+                    continue
+
+                ethicalScore = self.findLeaderEthicalValueOfCell(a, c)
+
+                alpha = 0.5
+                cellWealth = (c.sugar + c.spice) - alpha * c.pollution
+
+                combined = ethicalScore + cellWealth
+                tie = random.random()
+
+                cellCandidates.append((urgency, -combined, tie, a, c))
+
+        random.shuffle(cellCandidates)
+        cellCandidates.sort()
+
+        assignedAgents = set()
+        claimedCells = set()
+
+        for urgency, negCombined, tie, a, c in cellCandidates:
+            if a.ID in assignedAgents:
+                continue
+            if (c.x, c.y) in claimedCells:
+                continue
+
+            self.agentPlacements[a.ID] = c
+            assignedAgents.add(a.ID)
+            claimedCells.add((c.x, c.y))
+
+        # any agent not assigned will not move
+        for a in agents:
+            if a == self or not a.isAlive():
+                continue
+            if a.ID not in self.agentPlacements:
+                self.agentPlacements[a.ID] = a.cell
+
+        if "all" in self.debug or "agent" in self.debug:
+            print(f"[Leader] timestep={timestep} candidates={len(cellCandidates)} assigned={len(assignedAgents)}")
+
 
 class Temperance(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
