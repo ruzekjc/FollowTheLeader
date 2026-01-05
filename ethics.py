@@ -235,11 +235,12 @@ class Leader(agent.Agent):
             self.doDeath("aging")
 
     def moveAgentsToCells(self):
-        self.resetForTimestep()
+        timestep = self.cell.environment.sugarscape.timestep
+        self.resetForTimestep(timestep)
         env = self.cell.environment
         agents = env.sugarscape.agents
 
-    def findBestCell(self):\
+    def findBestCell(self):
         # no more grid-based algorithms
         timestep = self.cell.environment.sugarscape.timestep
         self.planPlacements(timestep)
@@ -254,50 +255,84 @@ class Leader(agent.Agent):
 
         return self.agentPlacements.get(agent.ID,agent.cell)
 
+    # Removed unnecessary happiness calculation
     def findUrgencyForAgent(self, agent):
         diseased = 0 if agent.isSick() else 1
-        happiness = agent.findHappiness()
         timeToLive = agent.findTimeToLive()
         # Lower score yields higher urgency
-        return diseased + happiness + timeToLive
+        return (timeToLive, diseased)
     
+    # Helper methods for leader ethical evaluation
+    def findNextMove(self,agent,cell):
+        postSpice = agent.spice + cell.spice - agent.findSpiceMetabolism()
+        postSugar = agent.sugar + cell.sugar - agent.findSugarMetabolism()
+        return (postSpice, postSugar)
+    
+    def safetyMargin(self,agent,cell):
+        postSpice, postSugar = self.findNextMove(agent,cell)
+        return min(postSpice, postSugar)
+    
+    def timeToLiveAfterMove(self,agent,cell):
+        postSpice, postSugar = self.findNextMove(agent,cell)
+        spiceTTL = postSpice / agent.spiceMetabolism if agent.spiceMetabolism > 0 else sys.maxsize
+        sugarTTL = postSugar / agent.sugarMetabolism if agent.sugarMetabolism > 0 else sys.maxsize
+        return min(spiceTTL, sugarTTL)
+    
+    # To discourage clustering
+    def crowdPenalty(self,cell):
+        crowd = 0
 
-    # Jada Improvement 2a: Ethical Evaluation of agent assignment
-    # - reusing Bentham class terminology + logic but modified for global allocation
-    def findLeaderEthicalValueOfCell(self, agent, cell):
-        cellSiteWealth = cell.sugar + cell.spice
-
-        metabolism = agent.sugarMetabolism + agent.spiceMetabolism
-
-        if metabolism > 0:
-            cellDuration = cellSiteWealth / metabolism
+        if isinstance(cell.neighbors, dict):
+            neighbors = cell.neighbors.values()
         else:
-            cellDuration = 0
+            neighbors = cell.neighbors
 
-        intensity = 1 / ((1 + agent.findTimeToLive()) * (1 + cell.pollution))
+        for neighbor in neighbors:
+            if neighbor is None:
+                continue
+            if getattr(neighbor, 'agent', None) is not None and neighbor.agent.isAlive():
+                crowd += 1
 
-        cellsInRange = len(agent.cellsInRange) if hasattr(agent, "cellsInRange") else 1
-        neighborhoodSize = cellsInRange if cellsInRange > 0 else 1
-        extent = neighborhoodSize / max(1, len(self.cell.environment.sugarscape.agents))
+        return crowd
+    
+    # Scoring Method: survival first and then welfare
+    def leaderScore(self,agent,cell):
+        safety = self.safetyMargin(agent,cell)
+        ttlNow = agent.findTimeToLive()
+        ttlAfter = self.timeToLiveAfterMove(agent,cell)
+        ttlGained = ttlAfter - ttlNow
 
-        currentReward = extent * (2 * intensity + cellDuration)
-        happiness = currentReward
-        unhappiness = 0
+        urgency = 1.0 / (1.0 + max(0.0, ttlNow))
+        crowd = self.crowdPenalty(cell)
 
-        cellValue = happiness - abs(unhappiness)
+        diseasePenalty = 0.25 * crowd if agent.isSick() else 0.0
 
-        return cellValue
+        # Weights can be adjusted as needed
+        return (
+            5.0 * safety +
+            10.0 * ttlGained +
+            urgency * (cell.sugar + cell.spice) -
+            0.5 * cell.pollution -
+            1.0 * crowd -
+            diseasePenalty
+        )
 
-    def findViableCellsForAgent(self, agent):
+    # Adjusted to consider safety margin
+    def findViableCellsForAgent(self, agent, safetyMargin=0):
         agent.findCellsInRange()
         viableCells = []
-        spiceMetabolism = agent.findSpiceMetabolism()
-        sugarMetabolism = agent.findSugarMetabolism()
+
         for cell in agent.cellsInRange.keys():
-            viableSpice = agent.spice + cell.spice - spiceMetabolism
-            viableSugar = agent.sugar + cell.sugar - sugarMetabolism
-            if viableSpice > 0 and viableSugar > 0:
-                viableCells.append(cell)
+            postSpice, postSugar = self.findNextMove(agent,cell)
+
+            if postSpice <= 0 or postSugar <= 0:
+                continue
+
+            if min(postSpice, postSugar) < safetyMargin:
+                continue
+
+            viableCells.append(cell)
+
         return viableCells
     
 
@@ -313,63 +348,92 @@ class Leader(agent.Agent):
         self.plannedTimestep = timestep
 
     # Jada Improvement 3: new method to greedily match agents with cells to move to
+    # Jada Improvement 4: implemented 2 phase allocation where
+    # - phase 1: the most urgent agents are allocated first
+    # - phase 2: non urgent agents are allocated after if needed
     def planPlacements(self, timestep):
         self.resetForTimestep(timestep)
 
         env = self.cell.environment
-        agents = env.sugarscape.agents
+        agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
 
-        # list of (urgency, -combinedScore, tie, agent, cell)
-        cellCandidates = []
-
-        for a in agents:
-            if a == self or not a.isAlive():
-                continue
-
-            urgency = self.findUrgencyForAgent(a)
-            viableCells = self.findViableCellsForAgent(a)
-
-            # If nothing viable, allow staying put
-            if not viableCells:
-                viableCells = [a.cell]
-
-            for c in viableCells:
-                # Skip illegal occupied cells (unless prey is valid)
-                if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
-                    continue
-
-                ethicalScore = self.findLeaderEthicalValueOfCell(a, c)
-
-                alpha = 0.5
-                cellWealth = (c.sugar + c.spice) - alpha * c.pollution
-
-                combined = ethicalScore + cellWealth
-                tie = random.random()
-
-                cellCandidates.append((urgency, -combined, tie, a, c))
-
-        random.shuffle(cellCandidates)
-        cellCandidates.sort()
+        sortedAgents = sorted(agents, key=lambda a: self.findUrgencyForAgent(a))
 
         assignedAgents = set()
         claimedCells = set()
 
-        for urgency, negCombined, tie, a, c in cellCandidates:
-            if a.ID in assignedAgents:
+        for a in sortedAgents:
+            margins = [2, 1, 0]
+            placed = False
+
+            for margin in margins:
+                viable = self.findViableCellsForAgent(a, safetyMargin=margin)
+                if not viable:
+                    continue
+
+                bestCell = None
+                bestScore = None
+
+                for c in viable:
+                    if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
+                        continue
+                    if (c.x, c.y) in claimedCells:
+                        continue
+
+                    score = self.leaderScore(a, c)
+                    if bestCell is None or score > bestScore:
+                        bestCell = c
+                        bestScore = score
+
+                if bestCell is not None:
+                    self.agentPlacements[a.ID] = bestCell
+                    assignedAgents.add(a.ID)
+                    claimedCells.add((bestCell.x, bestCell.y))
+                    placed = True
+                    break
+
+            if not placed:
+                self.agentPlacements[a.ID] = a.cell
+                assignedAgents.add(a.ID)
+                claimedCells.add((a.cell.x, a.cell.y))
+
+
+        # phase 2: non urgent agents will be allocated
+        cellCandidates = []
+
+        for a in sortedAgents:
+            viableCells = self.findViableCellsForAgent(a, safetyMargin=0)
+            if not viableCells:
+                viableCells = [a.cell]
+
+            for c in viableCells:
+                if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
+                    continue
+                if (c.x, c.y) in claimedCells:
+                    continue
+
+                score = self.leaderScore(a, c)
+                tie = random.random()
+
+                cellCandidates.append((-score, tie, a, c))
+
+        random.shuffle(cellCandidates)
+        cellCandidates.sort()
+
+        for score, tie, a, c in cellCandidates:
+            # agents already assigned can upgrade to a better cell
+            currentCell = self.agentPlacements.get(a.ID, a.cell)
+            currScore = self.leaderScore(a, currentCell)
+
+            newScore = -score
+            if newScore <= currScore:
                 continue
+
             if (c.x, c.y) in claimedCells:
                 continue
 
             self.agentPlacements[a.ID] = c
-            assignedAgents.add(a.ID)
             claimedCells.add((c.x, c.y))
-
-        # any agent not assigned will not move
-        for a in agents:
-            if a == self or not a.isAlive():
-                continue
-            if a.ID not in self.agentPlacements:
-                self.agentPlacements[a.ID] = a.cell
 
         if "all" in self.debug or "agent" in self.debug:
             print(f"[Leader] timestep={timestep} candidates={len(cellCandidates)} assigned={len(assignedAgents)}")
