@@ -227,6 +227,7 @@ class Leader(agent.Agent):
         self.vision = max(self.cell.environment.height, self.cell.environment.width)
 
         self.plannedTimestep = None
+        self.ICUtimesteps = 75
 
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
@@ -259,8 +260,9 @@ class Leader(agent.Agent):
     def findUrgencyForAgent(self, agent):
         diseased = 0 if agent.isSick() else 1
         timeToLive = agent.findTimeToLive()
+        metabolism = -(agent.sugarMetabolism + agent.spiceMetabolism)
         # Lower score yields higher urgency
-        return (timeToLive, diseased)
+        return (timeToLive, diseased, metabolism)
     
     # Helper methods for leader ethical evaluation
     def findNextMove(self,agent,cell):
@@ -277,7 +279,48 @@ class Leader(agent.Agent):
         spiceTTL = postSpice / agent.spiceMetabolism if agent.spiceMetabolism > 0 else sys.maxsize
         sugarTTL = postSugar / agent.sugarMetabolism if agent.sugarMetabolism > 0 else sys.maxsize
         return min(spiceTTL, sugarTTL)
+
+    # Jada Improvement 5: ICU early phase to prioritize sick or dying agents during the murderous period
+    def findICULevel(self, timestep):
+        if timestep < 25:
+            return 2
+        if timestep <= 50:
+            return 1
+        return 0
+
+    def findManhattanDistance(self,cellA,cellB):
+        return abs(cellA.x - cellB.x) + abs(cellA.y - cellB.y)
     
+    def findInfectionRisk(self, cell):
+        risk = 0
+
+        if isinstance(cell.neighbors, dict):
+            neighbors = cell.neighbors.values()
+        else:
+            neighbors = cell.neighbors
+
+        for neighbor in neighbors:
+            if neighbor is None:
+                continue
+            if getattr(neighbor, 'agent', None) is not None and neighbor.agent.isSick():
+                risk += 1
+
+        if getattr(cell, 'agent', None) is not None and cell.agent.isAlive() and cell.agent.isSick():
+            risk += 2
+
+        return risk
+    
+    # the agent is about to die
+    def isFragile(self,agent):
+        return agent.findTimeToLive() < 4 or agent.sugar < 2 or agent.spice < 2
+    
+    def isQuarantine(self,agent,timestep):
+        if agent.isSick():
+            return True
+        if self.findICULevel(timestep) > 0 and self.isFragile(agent):
+            return True
+        return False
+
     # To discourage clustering
     def crowdPenalty(self,cell):
         crowd = 0
@@ -297,32 +340,76 @@ class Leader(agent.Agent):
     
     # Scoring Method: survival first and then welfare
     def leaderScore(self,agent,cell):
+        timestep = self.cell.environment.sugarscape.timestep
+        level = self.findICULevel(timestep)
+
         safety = self.safetyMargin(agent,cell)
         ttlNow = agent.findTimeToLive()
         ttlAfter = self.timeToLiveAfterMove(agent,cell)
+        ttlAfterCapped = min(ttlAfter, 20)
         ttlGained = ttlAfter - ttlNow
 
-        urgency = 1.0 / (1.0 + max(0.0, ttlNow))
+        fragile = agent.findTimeToLive() < 4
+        quarantine = agent.isSick() or fragile
         crowd = self.crowdPenalty(cell)
+        crowdWeight = 6.0 if quarantine else 1.5
+        infectionRisk = self.findInfectionRisk(cell)
+        riskWeight = 10.0 if quarantine else 2.0
 
-        diseasePenalty = 0.25 * crowd if agent.isSick() else 0.0
+        resources = cell.sugar + cell.spice
+        moveDistance = 0.5 * self.findManhattanDistance(agent.cell, cell)
+        stayBonus = 2 if (cell == agent.cell and resources >= 4)else 0
 
-        # Weights can be adjusted as needed
+        # ICU mode - survival first, avoid disease hotspots, reduce churn
+        if level != 0:
+            crowdWeight = 6.0
+            riskWeight = 10.0
+            moveWeight = 1.0
+            return (
+                15.0 * safety +
+                20.0 * ttlAfterCapped +   # absolute survivability matters most
+                20.0 * ttlGained +         # still reward improvements
+                0.5 * (cell.sugar + cell.spice) -
+                2.0 * cell.pollution -
+                (crowdWeight * crowd + riskWeight * infectionRisk) -
+                moveWeight * moveDistance + stayBonus
+            )
+
+
+        urgency = 1.0 / (1.0 + max(0.0, ttlNow))
+
+        # Healthy agents should focus on welfare and TTL
         return (
-            5.0 * safety +
-            10.0 * ttlGained +
-            urgency * (cell.sugar + cell.spice) -
-            0.5 * cell.pollution -
-            1.0 * crowd -
-            diseasePenalty
+            4.0 * safety +
+            6.0 * ttlGained +
+            2.5 * resources -
+            0.3 * cell.pollution -
+            0.6 * crowd -
+            0.6 * infectionRisk -
+            0.1 * moveDistance
         )
 
     # Adjusted to consider safety margin
-    def findViableCellsForAgent(self, agent, safetyMargin=0):
+    def findViableCellsForAgent(self, agent, safetyMargin=0, minTTL=0, disallowOccupied=False):
         agent.findCellsInRange()
         viableCells = []
 
+        timestep = self.cell.environment.sugarscape.timestep
+        quarantine = self.isQuarantine(agent,timestep)
+
+
+        if quarantine:
+            level = self.findICULevel(timestep)
+            minTTL = 4 if (level ==2 ) else (2 if (level ==1) else 1)
+            disallowOccupied = True if (level == 2) else False
+        else:
+            minTTL = 0
+            disallowOccupied = False
+
         for cell in agent.cellsInRange.keys():
+            if disallowOccupied and cell.isOccupied():
+                continue
+
             postSpice, postSugar = self.findNextMove(agent,cell)
 
             if postSpice <= 0 or postSugar <= 0:
@@ -331,10 +418,13 @@ class Leader(agent.Agent):
             if min(postSpice, postSugar) < safetyMargin:
                 continue
 
+            ttlAfter = self.timeToLiveAfterMove(agent,cell)
+            if ttlAfter <= minTTL:
+                continue
+
             viableCells.append(cell)
 
         return viableCells
-    
 
     def resetForTimestep(self, timestep):
         # Always ensure leader has maximum resources each timestep
@@ -353,6 +443,10 @@ class Leader(agent.Agent):
     # - phase 2: non urgent agents are allocated after if needed
     def planPlacements(self, timestep):
         self.resetForTimestep(timestep)
+        timestep = self.cell.environment.sugarscape.timestep
+        level = self.findICULevel(timestep)
+        minTTL = 4 if (level != 0) else 1
+        disallowOccupied = True if (level != 0) else False
 
         env = self.cell.environment
         agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
@@ -363,11 +457,27 @@ class Leader(agent.Agent):
         claimedCells = set()
 
         for a in sortedAgents:
-            margins = [2, 1, 0]
             placed = False
+            if level == 2:
+                minTTL = 4
+                margins = [4, 2, 1, 0]
+                disallowOccupied = True
+            elif level == 1:
+                minTTL = 2
+                margins = [2, 1, 0]
+                disallowOccupied = False
+            else:
+                minTTL = 1
+                margins = [0]
+                disallowOccupied = False
 
             for margin in margins:
-                viable = self.findViableCellsForAgent(a, safetyMargin=margin)
+                viable = self.findViableCellsForAgent(
+                    a, 
+                    safetyMargin=margin,
+                    minTTL=minTTL,
+                    disallowOccupied=disallowOccupied
+                )
                 if not viable:
                     continue
 
@@ -402,7 +512,12 @@ class Leader(agent.Agent):
         cellCandidates = []
 
         for a in sortedAgents:
-            viableCells = self.findViableCellsForAgent(a, safetyMargin=0)
+            viableCells = self.findViableCellsForAgent(
+                a, 
+                safetyMargin=margin,
+                minTTL=minTTL,
+                disallowOccupied=disallowOccupied
+            )
             if not viableCells:
                 viableCells = [a.cell]
 
@@ -423,17 +538,23 @@ class Leader(agent.Agent):
         for score, tie, a, c in cellCandidates:
             # agents already assigned can upgrade to a better cell
             currentCell = self.agentPlacements.get(a.ID, a.cell)
-            currScore = self.leaderScore(a, currentCell)
+            currentScore = self.leaderScore(a, currentCell)
+            currentKey = (currentCell.x, currentCell.y)
+            newKey = (c.x, c.y)
 
             newScore = -score
-            if newScore <= currScore:
+            if newScore <= currentScore:
                 continue
 
-            if (c.x, c.y) in claimedCells:
+            if newKey in claimedCells:
                 continue
+
+            if currentKey in claimedCells:
+                claimedCells.remove(currentKey)
 
             self.agentPlacements[a.ID] = c
-            claimedCells.add((c.x, c.y))
+            claimedCells.add(newKey)
+
 
         if "all" in self.debug or "agent" in self.debug:
             print(f"[Leader] timestep={timestep} candidates={len(cellCandidates)} assigned={len(assignedAgents)}")
