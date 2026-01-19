@@ -1,3 +1,4 @@
+import math
 import agent
 import random
 import sys
@@ -227,7 +228,10 @@ class Leader(agent.Agent):
         self.vision = max(self.cell.environment.height, self.cell.environment.width)
 
         self.plannedTimestep = None
-        self.ICUtimesteps = 75
+        self.environment = self.cell.environment
+        self.maxSwaps = 100
+        # how many agent pairs to try
+        self.swap_sample = 30
 
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
@@ -242,21 +246,33 @@ class Leader(agent.Agent):
         agents = env.sugarscape.agents
 
     def findBestCell(self):
-        # no more grid-based algorithms
-        timestep = self.cell.environment.sugarscape.timestep
-        self.planPlacements(timestep)
-
-        # Leader agent should not move
-        return self.cell
-
-    def findBestCellForAgent(self, agent):
-        timestep = self.cell.environment.sugarscape.timestep
+        timestep = self.environment.sugarscape.timestep
         if self.plannedTimestep != timestep:
             self.planPlacements(timestep)
+        return self.cell   # leader stays put
 
-        return self.agentPlacements.get(agent.ID,agent.cell)
+    def findBestCellForAgent(self, agent):
+        timestep = self.environment.sugarscape.timestep
+        if self.plannedTimestep != timestep:
+            self.planPlacements(timestep)
+        return self.agentPlacements.get(agent.ID, agent.cell)
+    
+    def moveToBestCell(self):
+        # Leader does not move it only plans placements
+        env = self.cell.environment if self.cell is not None else self.environment
 
-    # Removed unnecessary happiness calculation
+        timestep = env.sugarscape.timestep
+
+        if self.plannedTimestep != timestep:
+            self.planPlacements(timestep)
+        # Mark as moved so Agent.doTimestep doesn't rerun movement logic
+        self.lastMovedTimestep = timestep
+        return
+
+    def gotoCell(self, cell):
+        # just a safety helper so the leader never changes cells
+        return
+
     def findUrgencyForAgent(self, agent):
         diseased = 0 if agent.isSick() else 1
         timeToLive = agent.findTimeToLive()
@@ -264,301 +280,430 @@ class Leader(agent.Agent):
         # Lower score yields higher urgency
         return (timeToLive, diseased, metabolism)
     
-    # Helper methods for leader ethical evaluation
     def findNextMove(self,agent,cell):
         postSpice = agent.spice + cell.spice - agent.findSpiceMetabolism()
         postSugar = agent.sugar + cell.sugar - agent.findSugarMetabolism()
         return (postSpice, postSugar)
-    
-    def safetyMargin(self,agent,cell):
-        postSpice, postSugar = self.findNextMove(agent,cell)
-        return min(postSpice, postSugar)
-    
-    def timeToLiveAfterMove(self,agent,cell):
-        postSpice, postSugar = self.findNextMove(agent,cell)
-        spiceTTL = postSpice / agent.spiceMetabolism if agent.spiceMetabolism > 0 else sys.maxsize
-        sugarTTL = postSugar / agent.sugarMetabolism if agent.sugarMetabolism > 0 else sys.maxsize
-        return min(spiceTTL, sugarTTL)
 
-    # Jada Improvement 5: ICU early phase to prioritize sick or dying agents during the murderous period
-    def findICULevel(self, timestep):
-        if timestep < 25:
-            return 2
-        if timestep <= 50:
-            return 1
-        return 0
+    def findViableCellsForAgent(self, agent, minTtl=1.1):
+        # viability should be "can i plausibly live after this move"
+        # using ttl is better than a fixed multi-step buffer because metabolism varies a lot
 
-    def findManhattanDistance(self,cellA,cellB):
-        return abs(cellA.x - cellB.x) + abs(cellA.y - cellB.y)
-    
-    def findInfectionRisk(self, cell):
-        risk = 0
-
-        if isinstance(cell.neighbors, dict):
-            neighbors = cell.neighbors.values()
-        else:
-            neighbors = cell.neighbors
-
-        for neighbor in neighbors:
-            if neighbor is None:
-                continue
-            if getattr(neighbor, 'agent', None) is not None and neighbor.agent.isSick():
-                risk += 1
-
-        if getattr(cell, 'agent', None) is not None and cell.agent.isAlive() and cell.agent.isSick():
-            risk += 2
-
-        return risk
-    
-    # the agent is about to die
-    def isFragile(self,agent):
-        return agent.findTimeToLive() < 4 or agent.sugar < 2 or agent.spice < 2
-    
-    def isQuarantine(self,agent,timestep):
-        if agent.isSick():
-            return True
-        if self.findICULevel(timestep) > 0 and self.isFragile(agent):
-            return True
-        return False
-
-    # To discourage clustering
-    def crowdPenalty(self,cell):
-        crowd = 0
-
-        if isinstance(cell.neighbors, dict):
-            neighbors = cell.neighbors.values()
-        else:
-            neighbors = cell.neighbors
-
-        for neighbor in neighbors:
-            if neighbor is None:
-                continue
-            if getattr(neighbor, 'agent', None) is not None and neighbor.agent.isAlive():
-                crowd += 1
-
-        return crowd
-    
-    # Scoring Method: survival first and then welfare
-    def leaderScore(self,agent,cell):
-        timestep = self.cell.environment.sugarscape.timestep
-        level = self.findICULevel(timestep)
-
-        safety = self.safetyMargin(agent,cell)
-        ttlNow = agent.findTimeToLive()
-        ttlAfter = self.timeToLiveAfterMove(agent,cell)
-        ttlAfterCapped = min(ttlAfter, 20)
-        ttlGained = ttlAfter - ttlNow
-
-        fragile = agent.findTimeToLive() < 4
-        quarantine = agent.isSick() or fragile
-        crowd = self.crowdPenalty(cell)
-        crowdWeight = 6.0 if quarantine else 1.5
-        infectionRisk = self.findInfectionRisk(cell)
-        riskWeight = 10.0 if quarantine else 2.0
-
-        resources = cell.sugar + cell.spice
-        moveDistance = 0.5 * self.findManhattanDistance(agent.cell, cell)
-        stayBonus = 2 if (cell == agent.cell and resources >= 4)else 0
-
-        # ICU mode - survival first, avoid disease hotspots, reduce churn
-        if level != 0:
-            crowdWeight = 6.0
-            riskWeight = 10.0
-            moveWeight = 1.0
-            return (
-                15.0 * safety +
-                20.0 * ttlAfterCapped +   # absolute survivability matters most
-                20.0 * ttlGained +         # still reward improvements
-                0.5 * (cell.sugar + cell.spice) -
-                2.0 * cell.pollution -
-                (crowdWeight * crowd + riskWeight * infectionRisk) -
-                moveWeight * moveDistance + stayBonus
-            )
-
-
-        urgency = 1.0 / (1.0 + max(0.0, ttlNow))
-
-        # Healthy agents should focus on welfare and TTL
-        return (
-            4.0 * safety +
-            6.0 * ttlGained +
-            2.5 * resources -
-            0.3 * cell.pollution -
-            0.6 * crowd -
-            0.6 * infectionRisk -
-            0.1 * moveDistance
-        )
-
-    # Adjusted to consider safety margin
-    def findViableCellsForAgent(self, agent, safetyMargin=0, minTTL=0, disallowOccupied=False):
         agent.findCellsInRange()
-        viableCells = []
-
-        timestep = self.cell.environment.sugarscape.timestep
-        quarantine = self.isQuarantine(agent,timestep)
-
-
-        if quarantine:
-            level = self.findICULevel(timestep)
-            minTTL = 4 if (level ==2 ) else (2 if (level ==1) else 1)
-            disallowOccupied = True if (level == 2) else False
-        else:
-            minTTL = 0
-            disallowOccupied = False
+        viable = []
 
         for cell in agent.cellsInRange.keys():
-            if disallowOccupied and cell.isOccupied():
+            # disallow moving into occupied cells (avoids combat + sequential move weirdness)
+            if cell.isOccupied() and cell != agent.cell:
                 continue
 
-            postSpice, postSugar = self.findNextMove(agent,cell)
+            ttl = self.ttlAfterMove(agent, cell)
 
-            if postSpice <= 0 or postSugar <= 0:
+            # ttlAfterMove already implies postSpice/postSugar > 0 unless metabolism is 0,
+            # but keep the ttl guard as the consistent rule
+            if ttl < minTtl:
                 continue
 
-            if min(postSpice, postSugar) < safetyMargin:
-                continue
+            viable.append(cell)
 
-            ttlAfter = self.timeToLiveAfterMove(agent,cell)
-            if ttlAfter <= minTTL:
-                continue
-
-            viableCells.append(cell)
-
-        return viableCells
+        return viable
 
     def resetForTimestep(self, timestep):
         # Always ensure leader has maximum resources each timestep
         self.spice = sys.maxsize
         self.sugar = sys.maxsize
 
-        print("RESET", timestep, "size", self.cell.environment.width, self.cell.environment.height)
-
         #self.grid[self.cell.x][self.cell.y] = self
         self.agentPlacements = {self.ID: self.cell}
         self.plannedTimestep = timestep
 
-    # Jada Improvement 3: new method to greedily match agents with cells to move to
-    # Jada Improvement 4: implemented 2 phase allocation where
-    # - phase 1: the most urgent agents are allocated first
-    # - phase 2: non urgent agents are allocated after if needed
+    # mirrors part of doTimestep() logic
+    def predictedWealthAfterMove(self, agent, cell):
+        # base wealth
+        sugar = agent.sugar
+        spice = agent.spice
+
+        # combat?
+        sugarLoot = 0
+        spiceLoot = 0
+        if agent.findAggression() > 0 and cell.agent is not None and cell.agent != agent:
+            prey = cell.agent
+            # same logic as Agent.doCombat (loot capped)
+            maxLoot = agent.cell.environment.maxCombatLoot
+            sugarLoot = min(maxLoot, prey.sugar)
+            spiceLoot = min(maxLoot, prey.spice)
+
+        # collect cell resources (headless uses current cell.sugar/spice)
+        sugar += cell.sugar + sugarLoot
+        spice += cell.spice + spiceLoot
+
+        # pay metabolism (same as doMetabolism)
+        sugar -= agent.findSugarMetabolism()
+        spice -= agent.findSpiceMetabolism()
+
+        return sugar, spice
+    
+    # similar to findConflictHappiness but whether it will happen after move
+    def predictedConflictHappiness(self, agent, cell):
+        willCombat = (agent.findAggression() > 0 and cell.agent is not None and cell.agent != agent)
+        if not willCombat:
+            return 0
+        return agent.happinessUnit if agent.findAggression() > 1 else -agent.happinessUnit
+    
+    def predictedWealthHappiness(self, agent, cell):
+        sugar, spice = self.predictedWealthAfterMove(agent, cell)
+        wealth = sugar + spice
+        meanWealth = agent.cell.environment.sugarscape.runtimeStats.get("meanWealth", 0)
+        diff = (wealth - meanWealth) * agent.happinessUnit
+        return math.erf(diff)
+    
+    def predictedSocialHappinessProxy(self, agent, cell):
+        # count alive neighbors if agent were at cell
+        neighbors = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
+        alive = 0
+        for n in neighbors:
+            if n is None: 
+                continue
+            if getattr(n, "agent", None) is not None and n.agent.isAlive():
+                alive += 1
+
+        if agent.maxFriends == 0:
+            return 0
+
+        # map neighbor count to same shape as findSocialHappiness:
+        #    socialHappiness = (len(friends)*step) - 1, step=2/maxFriends, then * happinessUnit
+        #    Use min(alive, maxFriends) as a proxy for potential friends
+        friendsProxy = min(alive, agent.maxFriends)
+        step = 2 / agent.maxFriends
+        return ((friendsProxy * step) - 1) * agent.happinessUnit
+    
+    def predictedSocialFromPlacements(self, agent, cell, placementByCell):
+        # how many agents will be adjacent *after* placements
+        neighbors = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
+        aliveAdj = 0
+        for ncell in neighbors:
+            if ncell is None:
+                continue
+            if ncell in placementByCell:
+                aliveAdj += 1
+
+        if agent.maxFriends == 0:
+            return 0
+
+        friendsProxy = min(aliveAdj, agent.maxFriends)
+        step = 2 / agent.maxFriends
+        return ((friendsProxy * step) - 1) * agent.happinessUnit
+    
+    def predictedHappiness(self, agent, cell, placementByCell=None):
+        family = agent.familyHappiness
+        health = agent.healthHappiness
+        conflict = self.predictedConflictHappiness(agent, cell)
+        wealth = self.predictedWealthHappiness(agent, cell)
+
+        if placementByCell is None:
+            social = self.predictedSocialHappinessProxy(agent, cell)
+        else:
+            social = self.predictedSocialFromPlacements(agent, cell, placementByCell)
+
+        return conflict + family + health + social + wealth
+    
+    def predictedHappinessNoSocial(self, agent, cell):
+        family = agent.familyHappiness
+        health = agent.healthHappiness
+        conflict = self.predictedConflictHappiness(agent, cell)
+        wealth = self.predictedWealthHappiness(agent, cell)
+
+        return conflict + family + health + wealth
+    
+    def predictedUtility(self, agent, cell, placementByCell=None):
+        h = self.predictedHappiness(agent, cell, placementByCell)
+
+        # Survival / fragility penalty encoded as utility (still one objective)
+        ttl = self.ttlAfterMove(agent, cell)
+
+        # essentially dying right after move -> prohibit
+        if ttl < 1.0:
+            return -1e9
+
+        # soft penalties for fragile states
+        # change these later, just starting big so extinctions disappear
+        if ttl < 2.0:
+            h -= 200.0
+        elif ttl < 3.0:
+            h -= 50.0
+        elif ttl < 4.0:
+            h -= 10.0
+
+        return h
+    
+    def placementScore(self, agents):
+        total = 0.0
+        for a in agents:
+            c = self.agentPlacements.get(a.ID, a.cell)
+            total += self.predictedHappiness(a, c)
+        return total
+
+    def improvePlacementsBySwaps(self, agents, placementByCell, maxSwaps=200, sampleSize=40):
+        if len(agents) < 2:
+            return
+
+        # ensure reachability caches exist
+        viableCache = {}
+        for a in agents:
+            viableCache[a.ID] = set(self.findViableCellsForAgent(a, minTtl=1.1))
+
+        for r in range(maxSwaps):
+            pool = agents if len(agents) <= sampleSize else random.sample(agents, sampleSize)
+            a1, a2 = random.sample(pool, 2)
+
+            c1 = self.agentPlacements.get(a1.ID, a1.cell)
+            c2 = self.agentPlacements.get(a2.ID, a2.cell)
+            if c1 == c2:
+                continue
+
+            # must be reachable
+            if c2 not in a1.cellsInRange or c1 not in a2.cellsInRange:
+                continue
+
+            if c2 not in viableCache[a1.ID]:
+                continue
+            if c1 not in viableCache[a2.ID]:
+                continue
+
+            # compute affected set before swap
+            affectedCells = {c1, c2}
+            affectedCells.update(self.findNeighbors(c1))
+            affectedCells.update(self.findNeighbors(c2))
+            affectedAgents = self.findAffectedAgents(affectedCells, placementByCell)
+
+            oldTotal = self.findTotalHappiness(affectedAgents, placementByCell)
+
+            # apply swap in placements
+            self.agentPlacements[a1.ID], self.agentPlacements[a2.ID] = c2, c1
+
+            # update placementByCell for swapped cells
+            placementByCell.pop(c1, None)
+            placementByCell.pop(c2, None)
+            placementByCell[c2] = a1
+            placementByCell[c1] = a2
+
+            newTotal = self.findTotalHappiness(affectedAgents, placementByCell)
+
+            # keep swap only if it improves local aggregate happiness
+            if newTotal <= oldTotal:
+                # revert
+                self.agentPlacements[a1.ID], self.agentPlacements[a2.ID] = c1, c2
+                placementByCell.pop(c1, None)
+                placementByCell.pop(c2, None)
+                placementByCell[c1] = a1
+                placementByCell[c2] = a2
+
+    def rescueDoomedAggressors(self, agents, placementByCell, doomedTtl=1.2):
+        # allow combat only if it improves aggregate objective
+        doomed = []
+        for a in agents:
+            if a.findAggression() <= 0:
+                continue
+            ttl = self.agentTtlAtPlannedCell(a)
+            if ttl < doomedTtl:
+                doomed.append(a)
+
+        if not doomed:
+            return
+
+        for a in doomed:
+            a.findCellsInRange()
+
+            bestDelta = 0.0
+            bestCell = None
+            bestPrey = None
+
+            aOldCell = self.agentPlacements.get(a.ID, a.cell)
+            aOldScore = self.predictedAggregateForAgentAtCell(a, aOldCell, placementByCell)
+
+            for c in a.cellsInRange.keys():
+                if c.agent is None:
+                    continue
+                if c.agent == a:
+                    continue
+                if not self.willCombat(a, c):
+                    continue
+
+                prey = c.agent
+                preyOldCell = self.agentPlacements.get(prey.ID, prey.cell)
+
+                # compute local delta (attacker + prey) for this possible attack move
+                preyOldScore = self.predictedAggregateForAgentAtCell(prey, preyOldCell, placementByCell)
+
+                aNewScore = self.predictedAggregateForAgentAtCell(a, c, placementByCell)
+
+                # treat prey death as large negative
+                preyNewScore = -self.deathPenalty()
+
+                delta = (aNewScore + preyNewScore) - (aOldScore + preyOldScore)
+
+                if delta > bestDelta:
+                    bestDelta = delta
+                    bestCell = c
+                    bestPrey = prey
+
+            # apply only if it improves aggregate objective
+            if bestCell is not None and bestDelta > 0.0:
+                # move attacker into prey cell and remove prey from plan
+                placementByCell.pop(aOldCell, None)
+
+                self.agentPlacements[a.ID] = bestCell
+                placementByCell[bestCell] = a
+
+                if bestPrey is not None:
+                    self.removeFromPlan(bestPrey, placementByCell)
+
+    def findNeighbors(self, cell):
+        nbrs = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
+        return [n for n in nbrs if n is not None]
+    
+    def ttlAfterMove(self, agent, cell):
+        postSpice, postSugar = self.findNextMove(agent, cell)
+        spiceTTL = postSpice / agent.findSpiceMetabolism() if agent.findSpiceMetabolism() > 0 else 1e9
+        sugarTTL = postSugar / agent.findSugarMetabolism() if agent.findSugarMetabolism() > 0 else 1e9
+        return min(spiceTTL, sugarTTL)
+    
+    def willCombat(self, attacker, targetCell):
+        if targetCell.agent is None:
+            return False
+        prey = targetCell.agent
+        if prey == attacker:
+            return False
+        return attacker.findAggression() > 0 and attacker.isNeighborValidPrey(prey)
+
+    def deathPenalty(self):
+        # will change later
+        # higher means leader avoids killing unless it prevents a death
+        return 500.0
+
+    def placementByCellFromCurrentPlan(self, agents):
+        placementByCell = {}
+        for a in agents:
+            c = self.agentPlacements.get(a.ID, a.cell)
+            placementByCell[c] = a
+        return placementByCell
+
+    def predictedAggregateForAgentAtCell(self, agent, cell, placementByCell):
+        # this keeps your aggregate happiness goal
+        return self.predictedHappiness(agent, cell, placementByCell)
+
+        # if you want to use your utility objective instead, replace with:
+        # return self.predictedUtility(agent, cell, placementByCell)
+
+    def swapPlacement(self, a1, a2, c1, c2, placementByCell):
+        # updates both maps consistently
+        self.agentPlacements[a1.ID] = c2
+        self.agentPlacements[a2.ID] = c1
+
+        placementByCell.pop(c1, None)
+        placementByCell.pop(c2, None)
+        placementByCell[c2] = a1
+        placementByCell[c1] = a2
+
+    def removeFromPlan(self, agent, placementByCell):
+        # used to simulate prey "dying" in planning
+        c = self.agentPlacements.get(agent.ID, agent.cell)
+        placementByCell.pop(c, None)
+        self.agentPlacements.pop(agent.ID, None)
+
+    def agentTtlAtPlannedCell(self, agent):
+        c = self.agentPlacements.get(agent.ID, agent.cell)
+        return self.ttlAfterMove(agent, c)
+
+    def findAffectedAgents(self, cells, placementByCell):
+        affected = set()
+        for cell in cells:
+            # agent in the cell
+            a = placementByCell.get(cell)
+            if a is not None:
+                affected.add(a)
+            # agents in neighboring cells
+            for n in self.findNeighbors(cell):
+                b = placementByCell.get(n)
+                if b is not None:
+                    affected.add(b)
+        return affected
+
+    def findTotalHappiness(self, agentSet, placementByCell):
+        total = 0.0
+        for a in agentSet:
+            c = self.agentPlacements.get(a.ID, a.cell)
+            total += self.predictedUtility(a, c, placementByCell)
+        return total
+    
+
     def planPlacements(self, timestep):
         self.resetForTimestep(timestep)
-        timestep = self.cell.environment.sugarscape.timestep
-        level = self.findICULevel(timestep)
-        minTTL = 4 if (level != 0) else 1
-        disallowOccupied = True if (level != 0) else False
-
-        env = self.cell.environment
+        env = self.environment
         agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
 
-        sortedAgents = sorted(agents, key=lambda a: self.findUrgencyForAgent(a))
-
-        assignedAgents = set()
-        claimedCells = set()
-
-        for a in sortedAgents:
-            placed = False
-            if level == 2:
-                minTTL = 4
-                margins = [4, 2, 1, 0]
-                disallowOccupied = True
-            elif level == 1:
-                minTTL = 2
-                margins = [2, 1, 0]
-                disallowOccupied = False
-            else:
-                minTTL = 1
-                margins = [0]
-                disallowOccupied = False
-
-            for margin in margins:
-                viable = self.findViableCellsForAgent(
-                    a, 
-                    safetyMargin=margin,
-                    minTTL=minTTL,
-                    disallowOccupied=disallowOccupied
-                )
-                if not viable:
-                    continue
-
-                bestCell = None
-                bestScore = None
-
-                for c in viable:
-                    if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
-                        continue
-                    if (c.x, c.y) in claimedCells:
-                        continue
-
-                    score = self.leaderScore(a, c)
-                    if bestCell is None or score > bestScore:
-                        bestCell = c
-                        bestScore = score
-
-                if bestCell is not None:
-                    self.agentPlacements[a.ID] = bestCell
-                    assignedAgents.add(a.ID)
-                    claimedCells.add((bestCell.x, bestCell.y))
-                    placed = True
+        pairs = []
+        for a in agents:
+            # only exclude immediate death moves
+            viable = []
+            for minTtl in (4.0, 3.0, 2.0, 1.1, 0.0):
+                viable = self.findViableCellsForAgent(a, minTtl=minTtl)
+                if viable:
                     break
 
-            if not placed:
-                self.agentPlacements[a.ID] = a.cell
-                assignedAgents.add(a.ID)
-                claimedCells.add((a.cell.x, a.cell.y))
-
-
-        # phase 2: non urgent agents will be allocated
-        cellCandidates = []
-
-        for a in sortedAgents:
-            viableCells = self.findViableCellsForAgent(
-                a, 
-                safetyMargin=margin,
-                minTTL=minTTL,
-                disallowOccupied=disallowOccupied
-            )
-            if not viableCells:
-                viableCells = [a.cell]
-
-            for c in viableCells:
+            # if still none, agent is doomed no matter what -> keep them in place
+            if not viable:
+                viable = [a.cell]
+            for c in viable:
                 if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
                     continue
-                if (c.x, c.y) in claimedCells:
+                # Do not allow assignments into occupied cells (prevents combat deaths)
+                if c.isOccupied() and c != a.cell:
                     continue
+                score = self.predictedUtility(a, c)
+                pairs.append((score, a, c))
 
-                score = self.leaderScore(a, c)
-                tie = random.random()
+        # highest score first
+        pairs.sort(key=lambda x: x[0], reverse=True)
 
-                cellCandidates.append((-score, tie, a, c))
+        claimedCells = set()
+        assignedAgents = set()
 
-        random.shuffle(cellCandidates)
-        cellCandidates.sort()
-
-        for score, tie, a, c in cellCandidates:
-            # agents already assigned can upgrade to a better cell
-            currentCell = self.agentPlacements.get(a.ID, a.cell)
-            currentScore = self.leaderScore(a, currentCell)
-            currentKey = (currentCell.x, currentCell.y)
-            newKey = (c.x, c.y)
-
-            newScore = -score
-            if newScore <= currentScore:
+        for score, a, c in pairs:
+            if a.ID in assignedAgents:
                 continue
-
-            if newKey in claimedCells:
+            if (c.x, c.y) in claimedCells:
                 continue
-
-            if currentKey in claimedCells:
-                claimedCells.remove(currentKey)
-
             self.agentPlacements[a.ID] = c
-            claimedCells.add(newKey)
+            assignedAgents.add(a.ID)
+            claimedCells.add((c.x, c.y))
 
+        # any unassigned agents stay put
+        for a in agents:
+            if a.ID not in assignedAgents:
+                self.agentPlacements[a.ID] = a.cell
 
-        if "all" in self.debug or "agent" in self.debug:
-            print(f"[Leader] timestep={timestep} candidates={len(cellCandidates)} assigned={len(assignedAgents)}")
+        # build placementByCell
+        placementByCell = {}
+        for a in agents:
+            placementByCell[self.agentPlacements.get(a.ID, a.cell)] = a
 
+        self.improvePlacementsBySwaps(
+            agents,
+            placementByCell,
+            maxSwaps=self.maxSwaps,
+            sampleSize=self.swap_sample
+        )
+
+        # rebuild placementByCell after swaps (important)
+        placementByCell = self.placementByCellFromCurrentPlan(agents)
+
+        # let doomed aggressors attack if it improves aggregate objective
+        # self.rescueDoomedAggressors(
+        #     agents,
+        #     placementByCell,
+        #     doomedTtl=1.2
+        # )
 
 class Temperance(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
