@@ -357,43 +357,6 @@ class Leader(agent.Agent):
         diff = (wealth - meanWealth) * agent.happinessUnit
         return math.erf(diff)
     
-    def predictedSocialHappinessProxy(self, agent, cell):
-        # count alive neighbors if agent were at cell
-        neighbors = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
-        alive = 0
-        for n in neighbors:
-            if n is None: 
-                continue
-            if getattr(n, "agent", None) is not None and n.agent.isAlive():
-                alive += 1
-
-        if agent.maxFriends == 0:
-            return 0
-
-        # map neighbor count to same shape as findSocialHappiness:
-        #    socialHappiness = (len(friends)*step) - 1, step=2/maxFriends, then * happinessUnit
-        #    Use min(alive, maxFriends) as a proxy for potential friends
-        friendsProxy = min(alive, agent.maxFriends)
-        step = 2 / agent.maxFriends
-        return ((friendsProxy * step) - 1) * agent.happinessUnit
-    
-    def predictedSocialFromPlacements(self, agent, cell, placementByCell):
-        # how many agents will be adjacent *after* placements
-        neighbors = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
-        aliveAdj = 0
-        for ncell in neighbors:
-            if ncell is None:
-                continue
-            if ncell in placementByCell:
-                aliveAdj += 1
-
-        if agent.maxFriends == 0:
-            return 0
-
-        friendsProxy = min(aliveAdj, agent.maxFriends)
-        step = 2 / agent.maxFriends
-        return ((friendsProxy * step) - 1) * agent.happinessUnit
-    
     def predictedHappiness(self, agent, cell, placementByCell=None):
         family = agent.familyHappiness
         health = agent.healthHappiness
@@ -417,16 +380,12 @@ class Leader(agent.Agent):
     
     def predictedUtility(self, agent, cell, placementByCell=None):
         h = self.predictedHappiness(agent, cell, placementByCell)
-
-        # Survival / fragility penalty encoded as utility (still one objective)
         ttl = self.ttlAfterMove(agent, cell)
 
-        # essentially dying right after move -> prohibit
         if ttl < 1.0:
             return -1e9
 
-        # soft penalties for fragile states
-        # change these later, just starting big so extinctions disappear
+        # change later
         if ttl < 2.0:
             h -= 200.0
         elif ttl < 3.0:
@@ -442,121 +401,6 @@ class Leader(agent.Agent):
             c = self.agentPlacements.get(a.ID, a.cell)
             total += self.predictedHappiness(a, c)
         return total
-
-    def improvePlacementsBySwaps(self, agents, placementByCell, maxSwaps=200, sampleSize=40):
-        if len(agents) < 2:
-            return
-
-        # ensure reachability caches exist
-        viableCache = {}
-        for a in agents:
-            viableCache[a.ID] = set(self.findViableCellsForAgent(a, minTtl=1.1))
-
-        for r in range(maxSwaps):
-            pool = agents if len(agents) <= sampleSize else random.sample(agents, sampleSize)
-            a1, a2 = random.sample(pool, 2)
-
-            c1 = self.agentPlacements.get(a1.ID, a1.cell)
-            c2 = self.agentPlacements.get(a2.ID, a2.cell)
-            if c1 == c2:
-                continue
-
-            # must be reachable
-            if c2 not in a1.cellsInRange or c1 not in a2.cellsInRange:
-                continue
-
-            if c2 not in viableCache[a1.ID]:
-                continue
-            if c1 not in viableCache[a2.ID]:
-                continue
-
-            # compute affected set before swap
-            affectedCells = {c1, c2}
-            affectedCells.update(self.findNeighbors(c1))
-            affectedCells.update(self.findNeighbors(c2))
-            affectedAgents = self.findAffectedAgents(affectedCells, placementByCell)
-
-            oldTotal = self.findTotalHappiness(affectedAgents, placementByCell)
-
-            # apply swap in placements
-            self.agentPlacements[a1.ID], self.agentPlacements[a2.ID] = c2, c1
-
-            # update placementByCell for swapped cells
-            placementByCell.pop(c1, None)
-            placementByCell.pop(c2, None)
-            placementByCell[c2] = a1
-            placementByCell[c1] = a2
-
-            newTotal = self.findTotalHappiness(affectedAgents, placementByCell)
-
-            # keep swap only if it improves local aggregate happiness
-            if newTotal <= oldTotal:
-                # revert
-                self.agentPlacements[a1.ID], self.agentPlacements[a2.ID] = c1, c2
-                placementByCell.pop(c1, None)
-                placementByCell.pop(c2, None)
-                placementByCell[c1] = a1
-                placementByCell[c2] = a2
-
-    def rescueDoomedAggressors(self, agents, placementByCell, doomedTtl=1.2):
-        # allow combat only if it improves aggregate objective
-        doomed = []
-        for a in agents:
-            if a.findAggression() <= 0:
-                continue
-            ttl = self.agentTtlAtPlannedCell(a)
-            if ttl < doomedTtl:
-                doomed.append(a)
-
-        if not doomed:
-            return
-
-        for a in doomed:
-            a.findCellsInRange()
-
-            bestDelta = 0.0
-            bestCell = None
-            bestPrey = None
-
-            aOldCell = self.agentPlacements.get(a.ID, a.cell)
-            aOldScore = self.predictedAggregateForAgentAtCell(a, aOldCell, placementByCell)
-
-            for c in a.cellsInRange.keys():
-                if c.agent is None:
-                    continue
-                if c.agent == a:
-                    continue
-                if not self.willCombat(a, c):
-                    continue
-
-                prey = c.agent
-                preyOldCell = self.agentPlacements.get(prey.ID, prey.cell)
-
-                # compute local delta (attacker + prey) for this possible attack move
-                preyOldScore = self.predictedAggregateForAgentAtCell(prey, preyOldCell, placementByCell)
-
-                aNewScore = self.predictedAggregateForAgentAtCell(a, c, placementByCell)
-
-                # treat prey death as large negative
-                preyNewScore = -self.deathPenalty()
-
-                delta = (aNewScore + preyNewScore) - (aOldScore + preyOldScore)
-
-                if delta > bestDelta:
-                    bestDelta = delta
-                    bestCell = c
-                    bestPrey = prey
-
-            # apply only if it improves aggregate objective
-            if bestCell is not None and bestDelta > 0.0:
-                # move attacker into prey cell and remove prey from plan
-                placementByCell.pop(aOldCell, None)
-
-                self.agentPlacements[a.ID] = bestCell
-                placementByCell[bestCell] = a
-
-                if bestPrey is not None:
-                    self.removeFromPlan(bestPrey, placementByCell)
 
     def findNeighbors(self, cell):
         nbrs = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
@@ -588,32 +432,6 @@ class Leader(agent.Agent):
             placementByCell[c] = a
         return placementByCell
 
-    def predictedAggregateForAgentAtCell(self, agent, cell, placementByCell):
-        # this keeps your aggregate happiness goal
-        return self.predictedHappiness(agent, cell, placementByCell)
-
-        # if you want to use your utility objective instead, replace with:
-        # return self.predictedUtility(agent, cell, placementByCell)
-
-    def swapPlacement(self, a1, a2, c1, c2, placementByCell):
-        # updates both maps consistently
-        self.agentPlacements[a1.ID] = c2
-        self.agentPlacements[a2.ID] = c1
-
-        placementByCell.pop(c1, None)
-        placementByCell.pop(c2, None)
-        placementByCell[c2] = a1
-        placementByCell[c1] = a2
-
-    def removeFromPlan(self, agent, placementByCell):
-        # used to simulate prey "dying" in planning
-        c = self.agentPlacements.get(agent.ID, agent.cell)
-        placementByCell.pop(c, None)
-        self.agentPlacements.pop(agent.ID, None)
-
-    def agentTtlAtPlannedCell(self, agent):
-        c = self.agentPlacements.get(agent.ID, agent.cell)
-        return self.ttlAfterMove(agent, c)
 
     def findAffectedAgents(self, cells, placementByCell):
         affected = set()
@@ -642,68 +460,149 @@ class Leader(agent.Agent):
         env = self.environment
         agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
 
-        pairs = []
+        bestAssign, bestScore = self.bruteforcePlacements(agents)
+
         for a in agents:
-            # only exclude immediate death moves
-            viable = []
-            for minTtl in (4.0, 3.0, 2.0, 1.1, 0.0):
-                viable = self.findViableCellsForAgent(a, minTtl=minTtl)
-                if viable:
-                    break
+            self.agentPlacements[a.ID] = bestAssign.get(a.ID, a.cell)
 
-            # if still none, agent is doomed no matter what -> keep them in place
-            if not viable:
-                viable = [a.cell]
-            for c in viable:
-                if c.isOccupied() and a.isNeighborValidPrey(c.agent) == False:
-                    continue
-                # Do not allow assignments into occupied cells (prevents combat deaths)
-                if c.isOccupied() and c != a.cell:
-                    continue
-                score = self.predictedUtility(a, c)
-                pairs.append((score, a, c))
-
-        # highest score first
-        pairs.sort(key=lambda x: x[0], reverse=True)
-
-        claimedCells = set()
-        assignedAgents = set()
-
-        for score, a, c in pairs:
-            if a.ID in assignedAgents:
-                continue
-            if (c.x, c.y) in claimedCells:
-                continue
-            self.agentPlacements[a.ID] = c
-            assignedAgents.add(a.ID)
-            claimedCells.add((c.x, c.y))
-
-        # any unassigned agents stay put
+    def bruteforcePlacements(self, agents, minTtl=1.0):
+        # valid cells per agent
+        domains = {}
         for a in agents:
-            if a.ID not in assignedAgents:
-                self.agentPlacements[a.ID] = a.cell
+            a.findCellsInRange()
+            opts = []
+            for c in a.cellsInRange.keys():
+                # only allow empty targets (except staying put)
+                if c != a.cell and c.isOccupied():
+                    continue
+                if self.ttlAfterMove(a, c) < minTtl:
+                    continue
+                opts.append(c)
 
-        # build placementByCell
+            if not opts:
+                opts = [a.cell]
+            domains[a.ID] = opts
+
+        # order agents by smallest domain first
+        ordered = sorted(agents, key=lambda a: len(domains[a.ID]))
+
+        # Cache neighbors for speed
+        cache = {}
+        for a in ordered:
+            for c in domains[a.ID]:
+                if c not in cache:
+                    nbrs = c.neighbors.values() if isinstance(c.neighbors, dict) else c.neighbors
+                    cache[c] = [n for n in nbrs if n is not None]
+
+        def countSocial(agentObj, count):
+            if agentObj.maxFriends == 0:
+                return 0.0
+            friendsProxy = min(count, agentObj.maxFriends)
+            step = 2 / agentObj.maxFriends
+            return ((friendsProxy * step) - 1) * agentObj.happinessUnit
+
+        # Precompute base (nonsocial) score per agent+cell
+        base = {}
+        for a in ordered:
+            amap = {}
+            for c in domains[a.ID]:
+                amap[c] = self.predictedHappinessNoSocial(a, c)
+            base[a.ID] = amap
+
+        # per agent, best possible base + max social
+        bestPossible = {}
+        for a in ordered:
+            maxSocial = countSocial(a, a.maxFriends)
+            bestBase = max(base[a.ID][c] for c in domains[a.ID])
+            bestPossible[a.ID] = bestBase + maxSocial
+
+        suffixBound = [0.0] * (len(ordered) + 1)
+        for i in range(len(ordered) - 1, -1, -1):
+            suffixBound[i] = suffixBound[i + 1] + bestPossible[ordered[i].ID]
+
+        bestScore = float("-inf")
+        bestAssign = {}
+
+        usedCells = set()
+        assign = {}
         placementByCell = {}
-        for a in agents:
-            placementByCell[self.agentPlacements.get(a.ID, a.cell)] = a
+        adjCount = {}
+        currentScore = 0.0
 
-        self.improvePlacementsBySwaps(
-            agents,
-            placementByCell,
-            maxSwaps=self.maxSwaps,
-            sampleSize=self.swap_sample
-        )
+        # Sort each domain by goodness to find good solutions early
+        sortedDomains = {}
+        for a in ordered:
+            sortedDomains[a.ID] = sorted(domains[a.ID], key=lambda c: base[a.ID][c], reverse=True)
 
-        # rebuild placementByCell after swaps (important)
-        placementByCell = self.placementByCellFromCurrentPlan(agents)
+        def place(a, c):
+            nonlocal currentScore
+            usedCells.add(c)
+            assign[a.ID] = c
+            placementByCell[c] = a
 
-        # let doomed aggressors attack if it improves aggregate objective
-        # self.rescueDoomedAggressors(
-        #     agents,
-        #     placementByCell,
-        #     doomedTtl=1.2
-        # )
+            # Count adjacent placed agents
+            neighbors = cache.get(c, [])
+            adjAgents = []
+            cnt = 0
+            for nc in neighbors:
+                b = placementByCell.get(nc)
+                if b is not None:
+                    adjAgents.append(b)
+                    cnt += 1
+
+            adjCount[a.ID] = cnt
+            currentScore += base[a.ID][c] + countSocial(a, cnt)
+
+            # update each neighbor agent's social (their adjacency increased by 1)
+            for b in adjAgents:
+                old = adjCount[b.ID]
+                new = old + 1
+                adjCount[b.ID] = new
+                currentScore += countSocial(b, new) - countSocial(b, old)
+
+            # needed for undo
+            return adjAgents
+
+        def unplace(a, c, adjAgents):
+            nonlocal currentScore
+
+            # undo neighbor social increments
+            for b in adjAgents:
+                old = adjCount[b.ID]
+                new = old - 1
+                adjCount[b.ID] = new
+                currentScore += countSocial(b, new) - countSocial(b, old)
+
+            # undo placed agent contribution
+            cnt = adjCount[a.ID]
+            currentScore -= base[a.ID][c] + countSocial(a, cnt)
+            adjCount.pop(a.ID, None)
+
+            placementByCell.pop(c, None)
+            assign.pop(a.ID, None)
+            usedCells.remove(c)
+
+        def dfs(i):
+            nonlocal bestScore, bestAssign
+            if currentScore + suffixBound[i] <= bestScore:
+                return
+
+            if i == len(ordered):
+                if currentScore > bestScore:
+                    bestScore = currentScore
+                    bestAssign = dict(assign)
+                return
+
+            a = ordered[i]
+            for c in sortedDomains[a.ID]:
+                if c in usedCells:
+                    continue
+                adjAgents = place(a, c)
+                dfs(i + 1)
+                unplace(a, c, adjAgents)
+
+        dfs(0)
+        return bestAssign, bestScore
 
 class Temperance(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
