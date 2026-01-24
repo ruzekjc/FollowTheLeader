@@ -238,12 +238,17 @@ class Leader(agent.Agent):
         # Consider being the last one left alive as an aging death for the leader
         if len(agents) == 1 and agents[0] == self:
             self.doDeath("aging")
+        return
 
-    def moveAgentsToCells(self):
-        timestep = self.cell.environment.sugarscape.timestep
-        self.resetForTimestep(timestep)
-        env = self.cell.environment
-        agents = env.sugarscape.agents
+    # bypassing base agent lifecycle so leader only plans placements then exits
+    def doTimestep(self, timestep):
+        # Leader should not perform normal agent actions
+        if self.plannedTimestep != timestep:
+            self.planPlacements(timestep)
+
+        # Mark moved so base code doesn't try again
+        self.lastMovedTimestep = timestep
+        return
 
     def findBestCell(self):
         timestep = self.environment.sugarscape.timestep
@@ -268,11 +273,7 @@ class Leader(agent.Agent):
         # Mark as moved so Agent.doTimestep doesn't rerun movement logic
         self.lastMovedTimestep = timestep
         return
-
-    def gotoCell(self, cell):
-        # just a safety helper so the leader never changes cells
-        return
-
+    
     def findUrgencyForAgent(self, agent):
         diseased = 0 if agent.isSick() else 1
         timeToLive = agent.findTimeToLive()
@@ -405,6 +406,10 @@ class Leader(agent.Agent):
     def findNeighbors(self, cell):
         nbrs = cell.neighbors.values() if isinstance(cell.neighbors, dict) else cell.neighbors
         return [n for n in nbrs if n is not None]
+    
+    # make sure none of the agents can attack the leader
+    def isNeighborValidPrey(self, other):
+        return False
     
     def ttlAfterMove(self, agent, cell):
         postSpice, postSugar = self.findNextMove(agent, cell)
@@ -582,26 +587,85 @@ class Leader(agent.Agent):
             assign.pop(a.ID, None)
             usedCells.remove(c)
 
-        def dfs(i):
-            nonlocal bestScore, bestAssign
-            if currentScore + suffixBound[i] <= bestScore:
-                return
 
-            if i == len(ordered):
+        n = len(ordered)
+
+        # stack frames
+        stack = [("try", 0, 0)]
+
+        # store per depth
+        placedCell = [None] * n
+        placedAdj = [None] * n
+
+        while stack:
+            kind, i, j = stack.pop()
+
+            if kind == "undo":
+                a = ordered[i]
+                c = placedCell[i]
+                adjAgents = placedAdj[i]
+                if c is not None:
+                    unplace(a, c, adjAgents)
+                    placedCell[i] = None
+                    placedAdj[i] = None
+                continue
+
+            # kind == "try"
+            # Bound check
+            if currentScore + suffixBound[i] <= bestScore:
+                continue
+
+            # Finished assignment
+            if i == n:
                 if currentScore > bestScore:
                     bestScore = currentScore
                     bestAssign = dict(assign)
-                return
+                continue
 
             a = ordered[i]
-            for c in sortedDomains[a.ID]:
-                if c in usedCells:
-                    continue
-                adjAgents = place(a, c)
-                dfs(i + 1)
-                unplace(a, c, adjAgents)
+            options = sortedDomains[a.ID]
 
-        dfs(0)
+            # Exhausted options at this depth
+            if j >= len(options):
+                continue
+
+            # Schedule trying the next option at this depth later
+            stack.append(("try", i, j + 1))
+
+            c = options[j]
+            if c in usedCells:
+                continue
+
+            # Place and go deeper
+            adjAgents = place(a, c)
+            placedCell[i] = c
+            placedAdj[i] = adjAgents
+
+            # Schedule undo after exploring deeper
+            stack.append(("undo", i, None))
+
+            # Go deeper
+            stack.append(("try", i + 1, 0))
+
+        # def dfs(i):
+        #   recursive dfs for later maybe
+        #     nonlocal bestScore, bestAssign
+        #     if currentScore + suffixBound[i] <= bestScore:
+        #         return
+
+        #     if i == len(ordered):
+        #         if currentScore > bestScore:
+        #             bestScore = currentScore
+        #             bestAssign = dict(assign)
+        #         return
+
+        #     a = ordered[i]
+        #     for c in sortedDomains[a.ID]:
+        #         if c in usedCells:
+        #             continue
+        #         adjAgents = place(a, c)
+        #         dfs(i + 1)
+        #         unplace(a, c, adjAgents)
         return bestAssign, bestScore
 
 class Temperance(agent.Agent):

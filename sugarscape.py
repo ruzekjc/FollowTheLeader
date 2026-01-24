@@ -189,41 +189,60 @@ class Sugarscape:
             agentConfiguration = self.agentEndowments[self.agentEndowmentIndex % len(self.agentEndowments)]
             self.agentEndowmentIndex += 1
             agentID = self.generateAgentID()
-            a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
-            if self.configuration["agentLeader"] == True and self.agentLeader == None:
-                a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
+
+            isLeaderSpawn = (self.configuration['agentLeader'] == True and self.agentLeader is None)
+
+            if isLeaderSpawn:
+
                 cornerCell = self.environment.grid[0][0]
-                a.gotoCell(cornerCell)
+                # If corner is occupied, find the first empty cell scanning from top left
+                if cornerCell.agent is not None:
+                    found = None
+                    for y in range(self.environment.height):
+                        for x in range(self.environment.width):
+                            c = self.environment.grid[x][y]
+                            if c.agent is None:
+                                found = c
+                                break
+                        if found is not None:
+                            break
+                    cornerCell = found if found is not None else cornerCell
+
+                placementCell = cornerCell
+                a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
                 self.agentLeader = a
+            else:
+                a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
+                dm = agentConfiguration['decisionModel']
 
-            # If using a different decision model, replace new agent with instance of child class
-            if "altruist" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = 0
-            elif "bentham" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                if agentConfiguration["selfishnessFactor"] < 0:
-                    a.selfishnessFactor = 0.5
-            elif "egoist" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = 1
-            elif "negativeBentham" in agentConfiguration["decisionModel"]:
-                a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
-                a.selfishnessFactor = -1
-            elif "temperance" in agentConfiguration["decisionModel"]:
-                a = ethics.Temperance(agentID, self.timestep, placementCell, agentConfiguration)
+                # If using a different decision model, replace new agent with instance of child class
+                if "altruist" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = 0
+                elif "bentham" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    if agentConfiguration["selfishnessFactor"] < 0:
+                        a.selfishnessFactor = 0.5
+                elif "egoist" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = 1
+                elif "negativeBentham" in agentConfiguration["decisionModel"]:
+                    a = ethics.Bentham(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.selfishnessFactor = -1
+                elif "temperance" in agentConfiguration["decisionModel"]:
+                    a = ethics.Temperance(agentID, self.timestep, placementCell, agentConfiguration)
 
-            # If dynamic selfishness is desired but not defined, give a small degree of dynamic selfishness
-            if "Dynamic" in agentConfiguration["decisionModel"] and self.configuration["agentDynamicSelfishnessFactor"] == [0.0, 0.0]:
-                a.dynamicSelfishnessFactor = 0.01
-            if "NoLookahead" in agentConfiguration["decisionModel"]:
-                a.decisionModelLookaheadFactor = 0
-            elif "HalfLookahead" in agentConfiguration["decisionModel"]:
-                a.decisionModelLookaheadFactor = 0.5
+                # If dynamic selfishness is desired but not defined, give a small degree of dynamic selfishness
+                if "Dynamic" in agentConfiguration["decisionModel"] and self.configuration["agentDynamicSelfishnessFactor"] == [0.0, 0.0]:
+                    a.dynamicSelfishnessFactor = 0.01
+                if "NoLookahead" in agentConfiguration["decisionModel"]:
+                    a.decisionModelLookaheadFactor = 0
+                elif "HalfLookahead" in agentConfiguration["decisionModel"]:
+                    a.decisionModelLookaheadFactor = 0.5
 
-            # If using a deontological decision model, replace new agent with instance of child class
-            if "asimov" in agentConfiguration["decisionModel"]:
-                a = ethics.Asimov(agentID, self.timestep, placementCell, agentConfiguration)
+                # If using a deontological decision model, replace new agent with instance of child class
+                if "asimov" in agentConfiguration["decisionModel"]:
+                    a = ethics.Asimov(agentID, self.timestep, placementCell, agentConfiguration)
 
             if self.configuration["environmentTribePerQuadrant"] == True:
                 tribe = quadrantIndex
