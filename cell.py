@@ -21,6 +21,22 @@ class Cell:
         self.sugarLastProduced = 0
         self.timestep = 0
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # neighbors creates a recursive graph that blows up deepcopy recursion
+        state["neighbors"] = None
+        # ranges can also be huge and can be recomputed
+        state["ranges"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # restore defaults so code can run before we rebuild
+        if self.neighbors is None:
+            self.neighbors = {}
+        if self.ranges is None:
+            self.ranges = {}
+
     def doPollutionDiffusion(self):
         self.pollution = self.pollutionFlux
 

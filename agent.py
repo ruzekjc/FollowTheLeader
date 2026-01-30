@@ -1204,7 +1204,7 @@ class Agent:
             return False
 
     def isNeighborValidPrey(self, neighbor):
-        if neighbor == None or self.findAggression() <= 0:
+        if neighbor == None or self.findAggression() <= 0 or getattr(neighbor, "leader", False):
             return False
         elif self.tribe != neighbor.tribe and self.sugar + self.spice >= neighbor.sugar + neighbor.spice:
             return True
@@ -1487,6 +1487,7 @@ class Agent:
         spiceGained = self.spice - self.lastSpice
         sugarGained = self.sugar - self.lastSugar
         wealthGained = spiceGained + sugarGained
+        prey = self.lastPrey
 
         controlNeighbors = 0
         experimentalNeighbors = 0

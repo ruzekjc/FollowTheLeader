@@ -13,6 +13,8 @@ import math
 import random
 import re
 import sys
+import io
+import logging
 
 class Sugarscape:
     def __init__(self, configuration):
@@ -113,6 +115,24 @@ class Sugarscape:
                                                  "tradeExperimentalGroupToControlGroup": 0, "tradeExperimentalGroupToExperimentalGroup": 0
                                                  }
             self.runtimeStats.update(self.groupInteractionRuntimeStats)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # gui holds tkinter objects and cant be deepcopied
+        state["gui"] = None
+
+        # remove open file handles (TextIOWrapper etc)
+        for k, v in list(state.items()):
+            if isinstance(v, io.IOBase):
+                state[k] = None
+            # logging objects often hold streams too
+            if isinstance(v, logging.Logger):
+                state[k] = None
+
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
 
     def addAgent(self, agent):
         self.bornAgents.append(agent)

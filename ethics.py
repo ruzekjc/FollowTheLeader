@@ -2,6 +2,7 @@ import math
 import agent
 import random
 import sys
+import copy
 
 class Asimov(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
@@ -209,6 +210,238 @@ class Bentham(agent.Agent):
     def spawnChild(self, childID, birthday, cell, configuration):
         return Bentham(childID, birthday, cell, configuration)
 
+class GhostEvaluator:
+    def __init__(self, environment):
+        self.environment = environment
+
+    # placementByAgentId: dict[agentId] -> (x, y)
+    # returns exact aggregate happiness after advancing 1 timestep
+    def evaluateOneStep(self, timestep, placementByAgentId):
+        # deepcopy can exceed recursion depth due to env/cell/neighbor reference graph
+        oldLimit = sys.getrecursionlimit()
+        sys.setrecursionlimit(20000)
+
+        try:
+            ghostEnv = copy.deepcopy(self.environment)
+        finally:
+            sys.setrecursionlimit(oldLimit)
+
+        self.rebuildNeighbors(ghostEnv)
+        self.rebuildRanges(ghostEnv, ghostEnv.sugarscape.agents)
+        ghostScape = ghostEnv.sugarscape
+
+        if getattr(ghostEnv.sugarscape, "gui", None) is not None:
+            raise RuntimeError("GhostEvaluator: gui was not stripped from deepcopy")
+
+        # keep timestep aligned
+        ghostScape.timestep = timestep
+
+        # map agent ids in the ghost world
+        idToAgent = {a.ID: a for a in ghostScape.agents}
+
+        ghostLeader = self.findGhostLeader(ghostScape.agents)
+        if ghostLeader is None:
+            raise RuntimeError("GhostEvaluator: no leader found in ghost agents")
+        ghostScape.agentLeader = ghostLeader
+
+        # pin leader planning so it doesnt replan inside ghost tick
+        ghostLeader.plannedTimestep = timestep
+        ghostLeader.agentPlacements = {ghostLeader.ID: ghostLeader.cell}
+
+        # apply the placement into the ghost leader plan
+        for agentId, (x, y) in placementByAgentId.items():
+            a = idToAgent.get(agentId)
+            if a is None:
+                continue
+            targetCell = self.cellAt(ghostEnv, x, y)
+            ghostLeader.agentPlacements[agentId] = targetCell
+
+        # prevent recursive replanning inside the ghost tick
+        leaderCLS = type(ghostLeader)
+        origPlan = getattr(leaderCLS, "planPlacements", None)
+        origBrute = getattr(leaderCLS, "bruteforcePlacementsGhost", None)
+        origGhostEval = getattr(ghostLeader, "ghostEval", None)
+
+        class NoopGhostEval:
+            def evaluateOneStep(self, timestep, placementByAgentId):
+                return 0.0
+
+        # even if something calls ghostLeader.ghostEval.evaluateOneStep, dont recurse
+        if hasattr(ghostLeader, "ghostEval"):
+            ghostLeader.ghostEval = NoopGhostEval()
+
+        if origPlan is not None:
+            leaderCLS.planPlacements = lambda self, t: None
+
+        if origBrute is not None:
+            # if planPlacements calls brute anyway, return the already-set placements
+            leaderCLS.bruteforcePlacementsGhost = lambda self, agents, t: (self.agentPlacements, 0.0)
+
+        try:
+            # advance exactly 1 timestep
+            self.advanceOneTimestep(ghostScape)
+        finally:
+            if origPlan is not None:
+                leaderCLS.planPlacements = origPlan
+            if origBrute is not None:
+                leaderCLS.bruteforcePlacementsGhost = origBrute
+            if hasattr(ghostLeader, "ghostEval"):
+                ghostLeader.ghostEval = origGhostEval
+
+        # compute exact aggregate happiness
+        score = self.aggregateHappiness(ghostScape)
+
+        # dereference for gc friendliness
+        del ghostScape
+        del ghostEnv
+        return score
+
+    def findGhostLeader(self, agents):
+        for a in agents:
+            if getattr(a, "leader", False):
+                return a
+        return None
+
+    def getCellGrid(self, env):
+        if hasattr(env, "grid"):
+            return env.grid
+        if hasattr(env, "cells"):
+            return env.cells
+        raise AttributeError("environment has no .grid or .cells")
+
+    def cellAt(self, env, x, y):
+        grid = self.getCellGrid(env)
+        return grid[x][y]
+
+    def advanceOneTimestep(self, sugarscape):
+        # prefer the canonical sim step if it exists
+        if hasattr(sugarscape, "doTimestep"):
+            sugarscape.doTimestep()
+            return
+        
+        t = sugarscape.timestep
+
+        #manually tick agents
+        for a in list(sugarscape.agents):
+            if hasattr(a, "isAlive") and not a.isAlive():
+                continue
+            a.doTimestep()
+
+        sugarscape.timestep = t + 1
+
+    def aggregateHappiness(self, sugarscape):
+        # if runtimeStats stores it, use that
+        stats = getattr(sugarscape, "runtimeStats", None)
+        if isinstance(stats, dict):
+            for key in ("aggregateHappiness", "totalHappiness", "sumHappiness"):
+                if key in stats:
+                    return float(stats[key])
+
+        # otherwise sum per-agent happiness fields
+        total = 0.0
+        for a in sugarscape.agents:
+            if hasattr(a, "isAlive") and not a.isAlive():
+                continue
+            if hasattr(a, "happiness"):
+                total += float(a.happiness)
+            elif hasattr(a, "totalHappiness"):
+                total += float(a.totalHappiness)
+        return total
+    
+    def rebuildNeighbors(self, env):
+        grid = self.getCellGrid(env)
+        w = env.width
+        h = env.height
+        wrap = getattr(env, "wraparound", False)
+
+        # try to infer moore vs von neumann
+        mode = str(getattr(env, "neighborhoodMode", "")).lower()
+        useDiagonals = ("moore" in mode) or ("8" in mode) or ("diag" in mode)
+
+        if useDiagonals:
+            deltas = [(-1,-1), (0,-1), (1,-1),
+                    (-1, 0),         (1, 0),
+                    (-1, 1), (0, 1), (1, 1)]
+        else:
+            deltas = [(0,-1), (-1,0), (1,0), (0,1)]
+
+        for x in range(w):
+            for y in range(h):
+                c = grid[x][y]
+                if c is None:
+                    continue
+
+                # make sure basic fields exist after deepcopy stripping
+                if getattr(c, "neighbors", None) is None:
+                    c.neighbors = {}
+                else:
+                    c.neighbors.clear()
+
+                if getattr(c, "ranges", None) is None:
+                    c.ranges = {}
+                # dont clear ranges aggressively; agents may fill it lazily
+
+                # ensure backref is correct
+                c.environment = env
+
+                for dx, dy in deltas:
+                    nx = x + dx
+                    ny = y + dy
+
+                    if wrap:
+                        nx %= w
+                        ny %= h
+                    else:
+                        if nx < 0 or nx >= w or ny < 0 or ny >= h:
+                            continue
+
+                    ncell = grid[nx][ny]
+                    if ncell is not None:
+                        c.neighbors[(dx, dy)] = ncell
+
+    def rebuildRanges(self, env, agents):
+        # cell.ranges[d] should be the ring of cells at distance d
+        grid = self.getCellGrid(env)
+
+        # agent.findCellsInRange accesses distances up to agent.vision
+        maxVision = 0
+        for a in agents:
+            if hasattr(a, "isAlive") and not a.isAlive():
+                continue
+            v = getattr(a, "vision", 0)
+            if v > maxVision:
+                maxVision = v
+
+        if maxVision <= 0:
+            return
+
+        for x in range(env.width):
+            for y in range(env.height):
+                c = grid[x][y]
+                if c is None:
+                    continue
+
+                # rebuild from scratch
+                c.ranges = {}
+
+                # bfs outward using neighbors we rebuilt
+                visited = set([c])
+                frontier = set([c])
+
+                for d in range(1, maxVision + 1):
+                    nxt = set()
+                    for cur in frontier:
+                        nbrs = cur.neighbors.values() if isinstance(cur.neighbors, dict) else cur.neighbors
+                        for n in nbrs:
+                            if n is None or n in visited:
+                                continue
+                            visited.add(n)
+                            nxt.add(n)
+
+                    # store ring at exactly distance d
+                    c.ranges[d] = {n: True for n in nxt}
+                    frontier = nxt
+
 class Leader(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
         super().__init__(agentID, birthday, cell, configuration)
@@ -229,9 +462,7 @@ class Leader(agent.Agent):
 
         self.plannedTimestep = None
         self.environment = self.cell.environment
-        self.maxSwaps = 100
-        # how many agent pairs to try
-        self.swap_sample = 30
+        self.ghostEval = GhostEvaluator(self.environment)
 
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
@@ -288,7 +519,7 @@ class Leader(agent.Agent):
 
     def findViableCellsForAgent(self, agent, minTtl=1.1):
         # viability should be "can i plausibly live after this move"
-        # using ttl is better than a fixed multi-step buffer because metabolism varies a lot
+        # using ttl is better than a fixed multistep buffer because metabolism varies a lot
 
         agent.findCellsInRange()
         viable = []
@@ -317,6 +548,15 @@ class Leader(agent.Agent):
         #self.grid[self.cell.x][self.cell.y] = self
         self.agentPlacements = {self.ID: self.cell}
         self.plannedTimestep = timestep
+
+    def cellKey(self, cell):
+        return (cell.x, cell.y)
+    
+    def cellFromKey(self, env, key):
+        x, y = key
+        if hasattr(env, "grid"):
+            return env.grid[x][y]
+        return env.cells[x][y]
 
     # mirrors part of doTimestep() logic
     def predictedWealthAfterMove(self, agent, cell):
@@ -465,7 +705,7 @@ class Leader(agent.Agent):
         env = self.environment
         agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
 
-        bestAssign, bestScore = self.bruteforcePlacements(agents)
+        bestAssign, bestScore = self.bruteforcePlacementsGhost(agents, timestep)
 
         for a in agents:
             self.agentPlacements[a.ID] = bestAssign.get(a.ID, a.cell)
@@ -667,6 +907,106 @@ class Leader(agent.Agent):
         #         dfs(i + 1)
         #         unplace(a, c, adjAgents)
         return bestAssign, bestScore
+    
+    def bruteforcePlacementsGhost(self, agents, timestep, minTtl=1.0):
+        # valid cells per agent
+        domains = {}
+        for a in agents:
+            a.findCellsInRange()
+            opts = []
+            for c in a.cellsInRange.keys():
+                # only allow empty targets (except staying put)
+                if c != a.cell and c.isOccupied():
+                    continue
+                if self.ttlAfterMove(a, c) < minTtl:
+                    continue
+                opts.append(c)
+
+            if not opts:
+                opts = [a.cell]
+            domains[a.ID] = opts
+
+        # order agents by smallest domain first
+        ordered = sorted(agents, key=lambda a: len(domains[a.ID]))
+        n = len(ordered)
+
+        sortedDomains = {}
+        for a in ordered:
+            sortedDomains[a.ID] = sorted(domains[a.ID], key=lambda c: self.predictedHappinessNoSocial(a, c), reverse=True)
+
+        usedCells = set()
+        assignCells = {}
+
+        bestScore = float("-inf")
+        bestAssignKeys = {}
+
+        # store per depth
+        placedCell = [None] * n
+
+        # stack frames
+        stack = [("try", 0, 0)]
+
+        while stack:
+            kind, i, j = stack.pop()
+
+            if kind == "undo":
+                # undo placement at depth i
+                a = ordered[i]
+                c = placedCell[i]
+                if c is not None:
+                    placedCell[i] = None
+                    assignCells.pop(a.ID, None)
+                    usedCells.remove(c)
+                continue
+
+            # kind == "try"
+
+            # finished assignment
+            if i == n:
+                # convert assignment to (x,y) for ghost world lookup
+                placementByAgentId = {}
+                for a in ordered:
+                    c = assignCells.get(a.ID, a.cell)
+                    placementByAgentId[a.ID] = self.cellKey(c)
+
+                score = self.ghostEval.evaluateOneStep(timestep, placementByAgentId)
+                if score > bestScore:
+                    bestScore = score
+                    bestAssignKeys = dict(placementByAgentId)
+                continue
+
+            a = ordered[i]
+            options = sortedDomains[a.ID]
+
+            # exhausted options at this depth
+            if j >= len(options):
+                continue
+
+            # schedule trying the next option at this depth later
+            stack.append(("try", i, j + 1))
+
+            c = options[j]
+            if c in usedCells:
+                continue
+
+            # place and go deeper
+            usedCells.add(c)
+            assignCells[a.ID] = c
+            placedCell[i] = c
+
+            # schedule undo after exploring deeper
+            stack.append(("undo", i, None))
+
+            # go deeper
+            stack.append(("try", i + 1, 0))
+
+        # convert best assignment back to real cells
+        bestAssignCells = {}
+        for agentId, key in bestAssignKeys.items():
+            bestAssignCells[agentId] = self.cellFromKey(self.environment, key)
+
+        return bestAssignCells, bestScore
+
 
 class Temperance(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
