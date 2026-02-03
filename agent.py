@@ -1487,7 +1487,6 @@ class Agent:
         spiceGained = self.spice - self.lastSpice
         sugarGained = self.sugar - self.lastSugar
         wealthGained = spiceGained + sugarGained
-        prey = self.lastPrey
 
         controlNeighbors = 0
         experimentalNeighbors = 0
