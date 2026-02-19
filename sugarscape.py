@@ -1,5 +1,6 @@
 #! /usr/bin/python
 
+import time
 import agent
 import cell
 import condition
@@ -851,7 +852,17 @@ class Sugarscape:
             if self.configuration["screenshots"] == True and self.configuration["headlessMode"] == False:
                 self.gui.canvas.postscript(file=f"screenshot{screenshots}.ps", colormode="color")
                 screenshots += 1
+
+            stepStart = time.perf_counter()
+
             self.doTimestep()
+
+            stepDuration = time.perf_counter() - stepStart
+            
+            with open("step_scores.log", "a") as f:
+                if stepDuration > 0.1:
+                    f.write(f"Config: {self.log} | Step: {self.timestep} | Time: {stepDuration:.4f}s | Agents: {len(self.agents)}\n")
+
             t += 1
             if self.gui != None and self.run == False:
                 self.pauseSimulation()
@@ -1064,6 +1075,11 @@ class Sugarscape:
         agentsReplaced = 0
         remainingTribes = 0
         tribes = {}
+
+        cultDensity = 0
+        leaderAgent = None
+        leaderDecisionTime = 0.0
+        leaderPlacementOptions = 0
         
         meanNeighbors = 0
         meanControlNeighbors = 0
@@ -1075,6 +1091,13 @@ class Sugarscape:
         for agent in self.agents:
             if group != None and agent.isInGroup(group, notInGroup) == False:
                 continue
+
+            if hasattr(agent, "leader") and agent.leader == True:
+                leaderDecisionTime = agent.lastDecisionTime
+                leaderPlacementOptions = agent.lastPlacementOptions
+                leaderAgent = agent
+                continue
+
             agentTimeToLive = agent.findTimeToLive()
             agentTimeToLiveAgeLimited = agent.findTimeToLive(True)
             agentWealth = agent.sugar + agent.spice
@@ -1166,6 +1189,26 @@ class Sugarscape:
                     diseaseIncidence += 1
                     if self.timestep != 0:
                         infectors.add(disease["infector"])
+
+        if leaderAgent != None:
+            gridWidth = self.environment.width
+            gridHeight = self.environment.height
+            
+            for agent in self.agents:
+                # Skip checking the leader against itself
+                if agent == leaderAgent:
+                    continue
+                    
+                # Calculate distance with map
+                dx = abs(leaderAgent.cell.x - agent.cell.x)
+                dx = min(dx, gridWidth - dx)
+                
+                dy = abs(leaderAgent.cell.y - agent.cell.y)
+                dy = min(dy, gridHeight - dy)
+                
+                # If agent is within a 2 cell difference
+                if max(dx, dy) <= 2:
+                    cultDensity += 1
 
         numDeadAgents = 0
         meanAgeAtDeath = 0
@@ -1304,7 +1347,10 @@ class Sugarscape:
             agentsBorn += 1
 
         # TODO: make clear whether agent or environment calculation
-        runtimeStats = {"agentAgingDeaths": agentAgingDeaths, "agentCombatDeaths": agentCombatDeaths, "agentDeaths": numDeadAgents,
+        runtimeStats = {"leaderDecisionTime": round(leaderDecisionTime, 4),
+                        "leaderPlacementOptions": leaderPlacementOptions,
+                        "cultDensity": cultDensity,
+                        "agentAgingDeaths": agentAgingDeaths, "agentCombatDeaths": agentCombatDeaths, "agentDeaths": numDeadAgents,
                         "agentDiseaseDeaths": agentDiseaseDeaths, "agentMeanTimeToLive": agentMeanTimeToLive, "agentsBorn": agentsBorn,
                         "agentsReplaced": agentsReplaced, "agentStarvationDeaths": agentStarvationDeaths, "agentTotalMetabolism": agentTotalMetabolism,
                         "agentWealthBurnRate": agentWealthBurnRate, "agentWealthCollected": agentWealthCollected, "agentWealthTotal": agentWealthTotal,

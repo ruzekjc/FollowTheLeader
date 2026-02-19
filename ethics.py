@@ -2,8 +2,7 @@ import math
 import agent
 import random
 import sys
-import copy
-
+import time
 import cell
 
 class Asimov(agent.Agent):
@@ -437,6 +436,8 @@ class Leader(agent.Agent):
         self.plannedTimestep = None
         self.environment = self.cell.environment
         self.ghostEval = GhostEvaluator(self.environment)
+        self.lastDecisionTime = 0.0
+        self.lastPlacementOptions = 0
 
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
@@ -571,6 +572,15 @@ class Leader(agent.Agent):
         meanWealth = agent.cell.environment.sugarscape.runtimeStats.get("meanWealth", 0)
         diff = (wealth - meanWealth) * agent.happinessUnit
         return math.erf(diff)
+    
+    def predictedSocialHappinessProxy(self, agent, cell):
+        neighbors = self.findNeighbors(cell)
+        if len(neighbors) == 0:
+            return -agent.happinessUnit
+        elif len(neighbors) <= agent.maxFriends:
+            return agent.happinessUnit * (len(neighbors) / agent.maxFriends)
+        else:
+            return agent.happinessUnit
     
     def predictedHappiness(self, agent, cell, placementByCell=None):
         family = agent.familyHappiness
@@ -883,6 +893,8 @@ class Leader(agent.Agent):
         return bestAssign, bestScore
     
     def bruteforcePlacementsGhost(self, agents, timestep, minTtl=1.0):
+        decisionStart = time.perf_counter() # Start the timer
+        optionsEvaluated = 0
         # valid cells per agent
         domains = {}
         for a in agents:
@@ -904,15 +916,29 @@ class Leader(agent.Agent):
         ordered = sorted(agents, key=lambda a: len(domains[a.ID]))
         n = len(ordered)
 
+        # precompute base score to find best possible
+        baseScores = {}
+        bestPossibleBase = {}
+        for a in ordered:
+            scores = {c: self.predictedHappinessNoSocial(a, c) for c in domains[a.ID]}
+            baseScores[a.ID] = scores
+            bestPossibleBase[a.ID] = max(scores[c] for c in domains[a.ID])
+
+        suffixBound = [0.0] * (n + 1)
+        for i in range(n - 1, -1, -1):
+            suffixBound[i] = suffixBound[i + 1] + bestPossibleBase[ordered[i].ID]
+
         sortedDomains = {}
         for a in ordered:
-            sortedDomains[a.ID] = sorted(domains[a.ID], key=lambda c: self.predictedHappinessNoSocial(a, c), reverse=True)
+            # sort by base happiness
+            allOptions = sorted(domains[a.ID], key=lambda c: baseScores[a.ID][c], reverse=True)
+            sortedDomains[a.ID] = allOptions
 
         usedCells = set()
         assignCells = {}
-
         bestScore = float("-inf")
         bestAssignKeys = {}
+        currBaseScore = 0.0
 
         # store per depth
         placedCell = [None] * n
@@ -922,18 +948,21 @@ class Leader(agent.Agent):
 
         while stack:
             kind, i, j = stack.pop()
+            optionsEvaluated += 1
 
             if kind == "undo":
                 # undo placement at depth i
                 a = ordered[i]
                 c = placedCell[i]
                 if c is not None:
+                    currBaseScore -= baseScores[a.ID][c]
                     placedCell[i] = None
                     assignCells.pop(a.ID, None)
                     usedCells.remove(c)
                 continue
 
-            # kind == "try"
+            if currBaseScore + suffixBound[i] <= bestScore:
+                continue
 
             # finished assignment
             if i == n:
@@ -967,6 +996,7 @@ class Leader(agent.Agent):
             usedCells.add(c)
             assignCells[a.ID] = c
             placedCell[i] = c
+            currBaseScore += baseScores[a.ID][c]
 
             # schedule undo after exploring deeper
             stack.append(("undo", i, None))
@@ -978,6 +1008,9 @@ class Leader(agent.Agent):
         bestAssignCells = {}
         for agentId, key in bestAssignKeys.items():
             bestAssignCells[agentId] = self.cellFromKey(self.environment, key)
+
+        self.lastDecisionTime = time.perf_counter() - decisionStart
+        self.lastPlacementOptions = optionsEvaluated
 
         return bestAssignCells, bestScore
 
