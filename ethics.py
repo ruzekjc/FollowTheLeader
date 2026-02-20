@@ -86,6 +86,9 @@ class Bentham(agent.Agent):
         super().__init__(agentID, birthday, cell, configuration)
         self.lastTimeToLive = 0
 
+        self.lastTtlNoAgeLimit = self.findTimeToLive(False)
+        self.foodSecurityHappiness = 0.0
+
     def findBestEthicalCell(self, cells, greedyBestCell=None):
         if len(cells) == 0:
             return None
@@ -197,6 +200,11 @@ class Bentham(agent.Agent):
         return cellValue
 
     def updateValues(self):
+        currentTtl = self.findTimeToLive(False)
+        diff = currentTtl - self.lastTtlNoAgeLimit
+        self.foodSecurityHappiness = math.erf(diff)
+        self.lastTtlNoAgeLimit = currentTtl
+
         if self.dynamicSelfishnessFactor != 0:
             self.updateSelfishnessFactor()
 
@@ -256,6 +264,9 @@ class GhostAgent(agent.Agent):
         self.socialHappiness = 0.0
         self.wealthHappiness = 0.0
 
+        self.foodSecurityHappiness = 0.0
+        self.lastTtlNoAgeLimit = configuration.get("lastTtlNoAgeLimit", 0.0)
+
     # need to override this one so it doesn't touch the global environment
     def findWealthHappiness(self):
         wealth = self.sugar + self.spice
@@ -263,6 +274,20 @@ class GhostAgent(agent.Agent):
         diffWealth = wealth - self.ghostMeanWealth
         diffWealth *= self.happinessUnit
         return math.erf(diffWealth)
+    
+    def findFoodSecurityHappiness(self):
+        postSugar = self.sugar + self.cell.sugar
+        postSpice = self.spice + self.cell.spice
+        
+        sugarTtl = postSugar / self.sugarMetabolism if self.sugarMetabolism > 0 else 1e9
+        spiceTtl = postSpice / self.spiceMetabolism if self.spiceMetabolism > 0 else 1e9
+        
+        currentTtl = min(sugarTtl, spiceTtl)
+        diff = currentTtl - self.lastTtlNoAgeLimit
+        return math.erf(diff * self.happinessUnit)
+        
+    def findHappiness(self):
+        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness
 
 class GhostEvaluator:
     def __init__(self, environment):
@@ -355,7 +380,8 @@ class GhostEvaluator:
                 "happinessUnit": getattr(realAgent, "happinessUnit", 1),
                 "decisionModel": getattr(realAgent, "decisionModel", "none"),
                 "maxFriends": getattr(realAgent, "maxFriends", 0),
-                "depressed": getattr(realAgent, "depressed", False)
+                "depressed": getattr(realAgent, "depressed", False),
+                "lastTtlNoAgeLimit": getattr(realAgent, "lastTtlNoAgeLimit", 0.0)
             }
 
             ghostAgent = GhostAgent(realAgent.ID, realAgent.born, targetCell, config, meanWealth=currentMeanWealth)
@@ -392,6 +418,7 @@ class GhostEvaluator:
             ghostAgent.wealthHappiness = ghostAgent.findWealthHappiness()
             ghostAgent.socialHappiness = ghostAgent.findSocialHappiness()
             ghostAgent.familyHappiness = ghostAgent.findFamilyHappiness()
+            ghostAgent.foodSecurityHappiness = ghostAgent.findFoodSecurityHappiness()
             ghostAgent.happiness = ghostAgent.findHappiness()
 
         return self.aggregateHappiness(ghostScape)
@@ -587,37 +614,36 @@ class Leader(agent.Agent):
         health = agent.healthHappiness
         conflict = self.predictedConflictHappiness(agent, cell)
         wealth = self.predictedWealthHappiness(agent, cell)
+        foodSecurity = self.predictedFoodSecurityHappiness(agent, cell)
 
         if placementByCell is None:
             social = self.predictedSocialHappinessProxy(agent, cell)
         else:
             social = self.predictedSocialFromPlacements(agent, cell, placementByCell)
 
-        return conflict + family + health + social + wealth
+        return conflict + family + health + social + wealth + foodSecurity
     
     def predictedHappinessNoSocial(self, agent, cell):
         family = agent.familyHappiness
         health = agent.healthHappiness
         conflict = self.predictedConflictHappiness(agent, cell)
         wealth = self.predictedWealthHappiness(agent, cell)
+        foodSecurity = self.predictedFoodSecurityHappiness(agent, cell)
 
-        return conflict + family + health + wealth
+        return conflict + family + health + wealth + foodSecurity
+    
+    def predictedFoodSecurityHappiness(self, agent, cell):
+        # current TTL
+        currentTtl = agent.findTimeToLive(False)
+        # what TTL will be if they move to the new cell
+        futureTtl = self.ttlAfterMove(agent, cell)
+        
+        # change in TTL from last timestep to this hypothetical timestep
+        diff = futureTtl - currentTtl
+        return math.erf(diff * agent.happinessUnit)
     
     def predictedUtility(self, agent, cell, placementByCell=None):
         h = self.predictedHappiness(agent, cell, placementByCell)
-        ttl = self.ttlAfterMove(agent, cell)
-
-        if ttl < 1.0:
-            return -1e9
-
-        # change later
-        if ttl < 2.0:
-            h -= 200.0
-        elif ttl < 3.0:
-            h -= 50.0
-        elif ttl < 4.0:
-            h -= 10.0
-
         return h
     
     def placementScore(self, agents):

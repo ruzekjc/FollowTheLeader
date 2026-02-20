@@ -116,6 +116,7 @@ class Agent:
         self.tribe = self.findTribe()
         self.visionModifier = 0
         self.wealthHappiness = 0
+        self.foodSecurityHappiness = 0
         self.validMoves = []
 
         self.combatWithControlGroup = 0
@@ -562,6 +563,9 @@ class Agent:
             # Bookkeeping before performing actions
             self.lastSugar = self.sugar
             self.lastSpice = self.spice
+
+            self.lastTtlNoAgeLimit = self.findTimeToLive(False)
+
             # Beginning of timestep actions
             self.moveToBestCell()
             self.updateNeighbors()
@@ -942,7 +946,7 @@ class Agent:
         return hammingDistance
 
     def findHappiness(self):
-        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness
+        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness
 
     def findHealthHappiness(self):
         if self.isSick():
@@ -1072,6 +1076,13 @@ class Agent:
         diffWealth = wealth - self.cell.environment.sugarscape.runtimeStats["meanWealth"]
         diffWealth *= self.happinessUnit
         return math.erf(diffWealth)
+    
+    def findFoodSecurityHappiness(self):
+        currentTtl = self.findTimeToLive(False)
+        
+        diff = currentTtl - self.lastTtlNoAgeLimit
+        
+        return math.erf(diff * self.happinessUnit)
 
     def findWelfare(self, sugarReward, spiceReward):
         spiceMetabolism = self.findSpiceMetabolism()
@@ -1428,6 +1439,7 @@ class Agent:
         self.healthHappiness = self.findHealthHappiness()
         self.socialHappiness = self.findSocialHappiness()
         self.wealthHappiness = self.findWealthHappiness()
+        self.foodSecurityHappiness = self.findFoodSecurityHappiness()
         self.happiness = self.findHappiness()
 
     def updateLoans(self):

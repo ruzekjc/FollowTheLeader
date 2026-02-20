@@ -1010,6 +1010,7 @@ class Sugarscape:
         meanVision = 0
         meanWealth = 0
         meanWealthHappiness = 0
+        meanFoodSecurityHappiness = 0
         minWealth = sys.maxsize
         numAgents = 0
         numTraders = 0
@@ -1114,6 +1115,7 @@ class Sugarscape:
             meanFamilyHappiness += agent.familyHappiness
             meanSocialHappiness += agent.socialHappiness
             meanConflictHappiness += agent.conflictHappiness
+            meanFoodSecurityHappiness += agent.foodSecurityHappiness
             if agent.tradeVolume > 0:
                 meanTradePrice += max(agent.spicePrice, agent.sugarPrice)
                 tradeVolume += agent.tradeVolume
@@ -1296,6 +1298,7 @@ class Sugarscape:
             meanSelfishness = round(meanSelfishness / numAgents, 2)
             meanSocialHappiness = round(meanSocialHappiness / numAgents, 2)
             meanTradePrice = round(meanTradePrice / numTraders, 2) if numTraders > 0 else 0
+            meanFoodSecurityHappiness = round(meanFoodSecurityHappiness / numAgents, 2)
             meanVision = round(meanVision / numAgents, 2)
             meanWealth = round(meanWealth / numAgents, 2)
             meanWealthHappiness = round(meanWealthHappiness / numAgents, 2)
@@ -1357,6 +1360,7 @@ class Sugarscape:
                         "carryingCapacity": carryingCapacity, "largestTribe": maxTribe, "largestTribeSize": maxTribeSize, "maxWealth": maxWealth,
                         "meanAge": meanAge, "meanAgeAtDeath": meanAgeAtDeath, "meanConflictHappiness": meanConflictHappiness,
                         "meanFamilyHappiness": meanFamilyHappiness, "meanHappiness": meanHappiness, "meanHealthHappiness": meanHealthHappiness,
+                        "meanFoodSecurityHappiness": meanFoodSecurityHappiness,
                         "meanMetabolism": meanMetabolism, "meanMovement": meanMovement, "meanMoveDifferenceFromOptimal": meanMoveDifferenceFromOptimal,
                         "meanMoveRank": meanMoveRank, "meanNeighbors": meanNeighbors, "meanSelfishness": meanSelfishness,
                         "meanSocialHappiness": meanSocialHappiness, "meanTradePrice": meanTradePrice, "meanWealth": meanWealth,
