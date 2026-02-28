@@ -103,6 +103,7 @@ class Agent:
         self.nice = 0
         self.socialHappiness = 0
         self.socialNetwork = {"father": None, "mother": None, "children": [], "friends": [], "creditors": [], "debtors": [], "mates": []}
+        self.spaceHappiness = 0
         self.spiceMeanIncome = 1
         self.spiceMetabolismModifier = 0
         self.spicePrice = 0
@@ -946,7 +947,7 @@ class Agent:
         return hammingDistance
 
     def findHappiness(self):
-        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness
+        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness + self.spaceHappiness
 
     def findHealthHappiness(self):
         if self.isSick():
@@ -1082,6 +1083,12 @@ class Agent:
         
         diff = currentTtl - self.lastTtlNoAgeLimit
         
+        return math.erf(diff * self.happinessUnit)
+    
+    def findSpaceHappiness(self):
+        # count how many agents are immediately adjacent
+        crowdCount = len(self.neighbors)
+        diff = 1.5 - crowdCount
         return math.erf(diff * self.happinessUnit)
 
     def findWelfare(self, sugarReward, spiceReward):
@@ -1440,6 +1447,7 @@ class Agent:
         self.socialHappiness = self.findSocialHappiness()
         self.wealthHappiness = self.findWealthHappiness()
         self.foodSecurityHappiness = self.findFoodSecurityHappiness()
+        self.spaceHappiness = self.findSpaceHappiness()
         self.happiness = self.findHappiness()
 
     def updateLoans(self):

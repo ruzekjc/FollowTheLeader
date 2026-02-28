@@ -859,10 +859,6 @@ class Sugarscape:
 
             stepDuration = time.perf_counter() - stepStart
             
-            with open("step_scores.log", "a") as f:
-                if stepDuration > 0.1:
-                    f.write(f"Config: {self.log} | Step: {self.timestep} | Time: {stepDuration:.4f}s | Agents: {len(self.agents)}\n")
-
             t += 1
             if self.gui != None and self.run == False:
                 self.pauseSimulation()
@@ -1093,7 +1089,7 @@ class Sugarscape:
             if group != None and agent.isInGroup(group, notInGroup) == False:
                 continue
 
-            if hasattr(agent, "leader") and agent.leader == True:
+            if hasattr(agent, "lastDecisionTime"):
                 leaderDecisionTime = agent.lastDecisionTime
                 leaderPlacementOptions = agent.lastPlacementOptions
                 leaderAgent = agent

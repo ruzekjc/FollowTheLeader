@@ -241,6 +241,7 @@ class GhostAgent(agent.Agent):
         self.sex = configuration["sex"]
         self.tags = configuration["tags"]
         self.timestep = 0
+        self.lastCombatTimestep = -1
         
         # happiness attributes
         self.happiness = 0.0
@@ -285,86 +286,135 @@ class GhostAgent(agent.Agent):
         currentTtl = min(sugarTtl, spiceTtl)
         diff = currentTtl - self.lastTtlNoAgeLimit
         return math.erf(diff * self.happinessUnit)
-        
+
+    def findSocialHappiness(self):
+        friends = self.socialNetwork.get("friends", [])
+        if self.maxFriends == 0:
+            return 0.0
+        friendCount = min(len(friends), self.maxFriends)
+        step = 2 / self.maxFriends
+        return ((friendCount * step) - 1)* self.happinessUnit
+    
+    def findFamilyHappiness(self):
+        children = self.socialNetwork.get("children", [])
+        mates = self.socialNetwork.get("mates", [])
+        familyCount = len(children) + len(mates)
+
+        if familyCount == 0:
+            return 0.0
+        return self.happinessUnit * min(familyCount / 3.0, 1.0)
+    
     def findHappiness(self):
-        return self.conflictHappiness + self.familyHappiness + self.healthHappiness + self.socialHappiness + self.wealthHappiness + self.foodSecurityHappiness
+        return (self.conflictHappiness + self.familyHappiness 
+                + self.healthHappiness + self.socialHappiness 
+                + self.wealthHappiness + self.foodSecurityHappiness)
+    
+class GhostCell:
+    def __init__(self, x, y, environment):
+        self.x = x
+        self.y = y
+        self.environment = environment
+        self.agent = None
+        self.sugar = 0
+        self.spice = 0
+        self.maxSugar = 0
+        self.maxSpice = 0
+        self.pollution = 0
+        self.neighbors = {}
+
+class GhostScape:
+    def __init__(self):
+        self.agents = []
+        self.runtimeStats = {}
+        self.timestep = 0
+
+class GhostEnv:
+    def __init__(self, realEnv):
+        self.width = realEnv.width
+        self.height = realEnv.height
+        self.grid = [[None for i in range(self.height)] for j in range(self.width)]
+        self.wraparound = realEnv.wraparound
+        self.equator = realEnv.equator
+        self.maxCombatLoot = realEnv.maxCombatLoot
+        self.globalMaxSugar = realEnv.globalMaxSugar
+        self.globalMaxSpice = realEnv.globalMaxSpice
+        self.neighborhoodMode = realEnv.neighborhoodMode
+        self.sugarscape = GhostScape()
+        
+        # Copy pollution settings
+        self.pollutionStart = realEnv.pollutionStart
+        self.pollutionEnd = realEnv.pollutionEnd
+        self.pollutionDiffusionStart = realEnv.pollutionDiffusionStart
+        self.pollutionDiffusionEnd = realEnv.pollutionDiffusionEnd
+        self.pollutionDiffusionDelay = realEnv.pollutionDiffusionDelay
+        self.spiceConsumptionPollutionFactor = realEnv.spiceConsumptionPollutionFactor
+        self.sugarConsumptionPollutionFactor = realEnv.sugarConsumptionPollutionFactor
+        self.sugarProductionPollutionFactor = realEnv.sugarProductionPollutionFactor
+        self.spiceProductionPollutionFactor = realEnv.spiceProductionPollutionFactor
+        self.universalSpiceIncome = realEnv.universalSpiceIncomeInterval
+        self.universalSugarIncome = realEnv.universalSugarIncomeInterval
 
 class GhostEvaluator:
     def __init__(self, environment):
         self.realEnvironment = environment
+        self.ghostEnv = None
+        self.ghostMap = {}
+        self.originalCellStats = {}
 
-    # returns exact aggregate happiness after advancing 1 timestep
-    def evaluateOneStep(self, timestep, placementByAgentId):
-        # create ghost environment
-        width = self.realEnvironment.width
-        height = self.realEnvironment.height
+    # create environment once
+    def createGhostEnv(self, timestep):
+        realEnv = self.realEnvironment
+        width = realEnv.width
+        height = realEnv.height
 
-        # capture real needed stats
-        realStats = self.realEnvironment.sugarscape.runtimeStats
+        realStats = realEnv.sugarscape.runtimeStats
         currentMeanWealth = realStats.get("meanWealth", 0)
 
-        class GhostSugarscape:
+        class GhostScape:
             def __init__(self):
                 self.agents = []
-                self.runtimeStats = {} 
-
-        ghostScape = GhostSugarscape()
-
-        class GhostEnv:
+                self.runtimeStats = {"meanWealth": currentMeanWealth}
+                self.timestep = timestep
+        
+        class GhostEnvClass:
             def __init__(self, w, h, scape, realEnv):
                 self.width = w
                 self.height = h
-                self.grid = [[None for j in range(h)] for i in range(w)]
-                self.maxCellDistance = 0
+                self.grid = [[None for _ in range(h)] for _ in range(w)]
                 self.sugarscape = scape
                 self.wraparound = realEnv.wraparound
                 self.equator = realEnv.equator
-
                 self.maxCombatLoot = realEnv.maxCombatLoot
                 self.globalMaxSugar = realEnv.globalMaxSugar
                 self.globalMaxSpice = realEnv.globalMaxSpice
-                self.neighborhoodMode = realEnv.neighborhoodMode
 
-                self.pollutionStart = realEnv.pollutionStart
-                self.pollutionEnd = realEnv.pollutionEnd
-                self.pollutionDiffusionStart = realEnv.pollutionDiffusionStart
-                self.pollutionDiffusionEnd = realEnv.pollutionDiffusionEnd
-                self.pollutionDiffusionDelay = realEnv.pollutionDiffusionDelay
-                self.spiceConsumptionPollutionFactor = realEnv.spiceConsumptionPollutionFactor
-                self.sugarConsumptionPollutionFactor = realEnv.sugarConsumptionPollutionFactor
-                self.sugarProductionPollutionFactor = realEnv.sugarProductionPollutionFactor
-                self.spiceProductionPollutionFactor = realEnv.spiceProductionPollutionFactor
+        ghostScape = GhostScape()
+        self.ghostEnv = GhostEnvClass(width, height, ghostScape, realEnv)
 
-                self.universalSpiceIncome = realEnv.universalSpiceIncomeInterval
-                self.universalSugarIncome = realEnv.universalSugarIncomeInterval
+        for x in range (realEnv.width):
+            for y in range(realEnv.height):
+                realCell = realEnv.grid[x][y]
 
-        ghostEnv = GhostEnv(width, height, ghostScape, self.realEnvironment)
-
-        for x in range (width):
-            for y in range(height):
-                realCell = self.realEnvironment.grid[x][y]
-
-                ghostCell = cell.Cell(x,y,ghostEnv)
+                ghostCell = cell.Cell(x,y,self.ghostEnv)
                 ghostCell.maxSugar = realCell.maxSugar
                 ghostCell.maxSpice = realCell.maxSpice
                 ghostCell.sugar = realCell.sugar
                 ghostCell.spice = realCell.spice
                 ghostCell.pollution = realCell.pollution
-                ghostEnv.grid[x][y] = ghostCell
+                self.ghostEnv.grid[x][y] = ghostCell
 
-        ghostAgents = []
-        ghostAgentMap = {}
+                self.originalCellStats[(x,y)] = {
+                    "sugar": realCell.sugar,
+                    "spice": realCell.spice
+                }
 
         realAgents = [a for a in self.realEnvironment.sugarscape.agents if a.isAlive()]
-
+        self.ghostAgentMap = {}
+        ghostAgents = []
+        
         for realAgent in realAgents:
             # calculate target cell
-            if realAgent.ID in placementByAgentId:
-                tx, ty = placementByAgentId[realAgent.ID]
-            else:
-                tx, ty = realAgent.cell.x, realAgent.cell.y
-
-            targetCell = ghostEnv.grid[tx][ty]
+            targetCell = self.ghostEnv.grid[realAgent.cell.x][realAgent.cell.y]
 
             config = {
                 "sugar": realAgent.sugar,
@@ -385,63 +435,80 @@ class GhostEvaluator:
             }
 
             ghostAgent = GhostAgent(realAgent.ID, realAgent.born, targetCell, config, meanWealth=currentMeanWealth)
-            targetCell.agent = ghostAgent
             ghostAgents.append(ghostAgent)
-            ghostAgentMap[realAgent.ID] = ghostAgent
+            self.ghostAgentMap[realAgent.ID] = ghostAgent
 
-        ghostScape.agents = ghostAgents
+        self.ghostEnv.sugarscape.agents = ghostAgents
 
         # rebuild social networks only if they exist
         for realAgent in realAgents:
-            ghostAgent = ghostAgentMap[realAgent.ID]
+            if realAgent.ID not in self.ghostAgentMap:
+                continue
+            ghostAgent = self.ghostAgentMap[realAgent.ID]
 
             for friend in realAgent.socialNetwork.get("friends", []):
                 realFriend = friend["friend"]
 
-                if realFriend.ID in ghostAgentMap:
+                if realFriend.ID in self.ghostAgentMap:
                     ghostAgent.socialNetwork["friends"].append({
-                        "friend": ghostAgentMap[realFriend.ID],
+                        "friend": self.ghostAgentMap[realFriend.ID],
                         "hammingDistance": friend["hammingDistance"]
                         })
                     
-        # rebuild children - family happiness
-        for realChild in realAgent.socialNetwork.get("children", []):
-            if realChild.ID in ghostAgentMap:
-                ghostAgent.socialNetwork["children"].append(ghostAgentMap[realChild.ID])
+            # rebuild children and mates relationships if they exist
+            for realChild in realAgent.socialNetwork.get("children", []):
+                if realChild.ID in self.ghostAgentMap:
+                    ghostAgent.socialNetwork["children"].append(self.ghostAgentMap[realChild.ID])
 
-        for realMate in realAgent.socialNetwork.get("mates", []):
-            if realMate.ID in ghostAgentMap:
-                ghostAgent.socialNetwork["mates"].append(ghostAgentMap[realMate.ID])
+            for realMate in realAgent.socialNetwork.get("mates", []):
+                if realMate.ID in self.ghostAgentMap:
+                    ghostAgent.socialNetwork["mates"].append(self.ghostAgentMap[realMate.ID])
+        return self.ghostEnv
+    
+    def setPlacement(self, placementById):
+        for x in range(self.ghostEnv.width):
+            for y in range(self.ghostEnv.height):
+                self.ghostEnv.grid[x][y].agent = None
 
-        # update happiness
-        for ghostAgent in ghostAgents:
-            ghostAgent.wealthHappiness = ghostAgent.findWealthHappiness()
-            ghostAgent.socialHappiness = ghostAgent.findSocialHappiness()
+                #reset cell resources to original
+                stats = self.originalCellStats.get((x,y), None)
+                self.ghostEnv.grid[x][y].sugar = stats["sugar"] if stats else 0
+                self.ghostEnv.grid[x][y].spice = stats["spice"] if stats else 0
+
+        for agentId, cell in placementById.items():
+            if agentId in self.ghostAgentMap:
+                ghostAgent = self.ghostAgentMap[agentId]
+                targetCell = self.ghostEnv.grid[cell[0]][cell[1]]
+                ghostAgent.cell = targetCell
+                targetCell.agent = ghostAgent
+
+    def evaluatePlacement(self):
+        for ghostAgent in self.ghostEnv.sugarscape.agents:
             ghostAgent.familyHappiness = ghostAgent.findFamilyHappiness()
+            ghostAgent.socialHappiness = ghostAgent.findSocialHappiness()
+            ghostAgent.wealthHappiness = ghostAgent.findWealthHappiness()
             ghostAgent.foodSecurityHappiness = ghostAgent.findFoodSecurityHappiness()
             ghostAgent.happiness = ghostAgent.findHappiness()
 
-        return self.aggregateHappiness(ghostScape)
-
-
-    def aggregateHappiness(self, sugarscape):
-        # if runtimeStats stores it, use that
-        stats = getattr(sugarscape, "runtimeStats", None)
-        if isinstance(stats, dict):
-            for key in ("aggregateHappiness", "totalHappiness", "sumHappiness"):
-                if key in stats:
-                    return float(stats[key])
-
-        # otherwise sum per-agent happiness fields
         total = 0.0
-        for a in sugarscape.agents:
-            if hasattr(a, "isAlive") and not a.isAlive():
-                continue
+        for a in self.ghostEnv.sugarscape.agents:
+            total += float(a.happiness)
+
+        return total
+
+    def aggregateHappiness(self):
+        # sum per-agent happiness fields
+        total = 0.0
+        for a in self.ghostEnv.sugarscape.agents:
             if hasattr(a, "happiness"):
                 total += float(a.happiness)
-            elif hasattr(a, "totalHappiness"):
-                total += float(a.totalHappiness)
         return total
+    
+    def evaluateOneStep(self, timestep, placementById):
+        self.createGhostEnv(timestep)
+        self.setPlacement(placementById)
+        return self.evaluatePlacement()
+
 class Leader(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
         super().__init__(agentID, birthday, cell, configuration)
@@ -466,12 +533,18 @@ class Leader(agent.Agent):
         self.lastDecisionTime = 0.0
         self.lastPlacementOptions = 0
 
+    def isAlive(self):
+        return self.alive
+
     def doAging(self):
         agents = self.cell.environment.sugarscape.agents
         # Consider being the last one left alive as an aging death for the leader
         if len(agents) == 1 and agents[0] == self:
             self.doDeath("aging")
         return
+    
+    def doDeath(self, cause):
+        self.alive = False
 
     # bypassing base agent lifecycle so leader only plans placements then exits
     def doTimestep(self, timestep):
@@ -551,16 +624,6 @@ class Leader(agent.Agent):
         self.agentPlacements = {self.ID: self.cell}
         self.plannedTimestep = timestep
 
-    def cellKey(self, cell):
-        return (cell.x, cell.y)
-    
-    def cellFromKey(self, env, key):
-        x, y = key
-        if hasattr(env, "grid"):
-            return env.grid[x][y]
-        return env.cells[x][y]
-
-    # mirrors part of doTimestep() logic
     def predictedWealthAfterMove(self, agent, cell):
         # base wealth
         sugar = agent.sugar
@@ -643,8 +706,7 @@ class Leader(agent.Agent):
         return math.erf(diff * agent.happinessUnit)
     
     def predictedUtility(self, agent, cell, placementByCell=None):
-        h = self.predictedHappiness(agent, cell, placementByCell)
-        return h
+        return self.predictedHappiness(agent, cell, placementByCell)
     
     def placementScore(self, agents):
         total = 0.0
@@ -675,18 +737,19 @@ class Leader(agent.Agent):
             return False
         return attacker.findAggression() > 0 and attacker.isNeighborValidPrey(prey)
 
-    def deathPenalty(self):
-        # will change later
-        # higher means leader avoids killing unless it prevents a death
-        return 500.0
-
     def placementByCellFromCurrentPlan(self, agents):
         placementByCell = {}
         for a in agents:
             c = self.agentPlacements.get(a.ID, a.cell)
             placementByCell[c] = a
         return placementByCell
+    
+    def cellKey(self, cell):
+        return (cell.x, cell.y)
 
+    def cellFromKey(self, environment, key):
+        x, y = key
+        return environment.grid[x][y]
 
     def findAffectedAgents(self, cells, placementByCell):
         affected = set()
@@ -718,209 +781,25 @@ class Leader(agent.Agent):
         bestAssign, bestScore = self.bruteforcePlacementsGhost(agents, timestep)
 
         for a in agents:
-            self.agentPlacements[a.ID] = bestAssign.get(a.ID, a.cell)
+            cell = bestAssign.get(a.ID, a.cell)
+            if cell is None:
+                cell = a.cell
+            self.agentPlacements[a.ID] = cell
 
-    def bruteforcePlacements(self, agents, minTtl=1.0):
-        # valid cells per agent
-        domains = {}
-        for a in agents:
-            a.findCellsInRange()
-            opts = []
-            for c in a.cellsInRange.keys():
-                # only allow empty targets (except staying put)
-                if c != a.cell and c.isOccupied():
-                    continue
-                if self.ttlAfterMove(a, c) < minTtl:
-                    continue
-                opts.append(c)
-
-            if not opts:
-                opts = [a.cell]
-            domains[a.ID] = opts
-
-        # order agents by smallest domain first
-        ordered = sorted(agents, key=lambda a: len(domains[a.ID]))
-
-        # Cache neighbors for speed
-        cache = {}
-        for a in ordered:
-            for c in domains[a.ID]:
-                if c not in cache:
-                    nbrs = c.neighbors.values() if isinstance(c.neighbors, dict) else c.neighbors
-                    cache[c] = [n for n in nbrs if n is not None]
-
-        def countSocial(agentObj, count):
-            if agentObj.maxFriends == 0:
-                return 0.0
-            friendsProxy = min(count, agentObj.maxFriends)
-            step = 2 / agentObj.maxFriends
-            return ((friendsProxy * step) - 1) * agentObj.happinessUnit
-
-        # Precompute base (nonsocial) score per agent+cell
-        base = {}
-        for a in ordered:
-            amap = {}
-            for c in domains[a.ID]:
-                amap[c] = self.predictedHappinessNoSocial(a, c)
-            base[a.ID] = amap
-
-        # per agent, best possible base + max social
-        bestPossible = {}
-        for a in ordered:
-            maxSocial = countSocial(a, a.maxFriends)
-            bestBase = max(base[a.ID][c] for c in domains[a.ID])
-            bestPossible[a.ID] = bestBase + maxSocial
-
-        suffixBound = [0.0] * (len(ordered) + 1)
-        for i in range(len(ordered) - 1, -1, -1):
-            suffixBound[i] = suffixBound[i + 1] + bestPossible[ordered[i].ID]
-
-        bestScore = float("-inf")
-        bestAssign = {}
-
-        usedCells = set()
-        assign = {}
-        placementByCell = {}
-        adjCount = {}
-        currentScore = 0.0
-
-        # Sort each domain by goodness to find good solutions early
-        sortedDomains = {}
-        for a in ordered:
-            sortedDomains[a.ID] = sorted(domains[a.ID], key=lambda c: base[a.ID][c], reverse=True)
-
-        def place(a, c):
-            nonlocal currentScore
-            usedCells.add(c)
-            assign[a.ID] = c
-            placementByCell[c] = a
-
-            # Count adjacent placed agents
-            neighbors = cache.get(c, [])
-            adjAgents = []
-            cnt = 0
-            for nc in neighbors:
-                b = placementByCell.get(nc)
-                if b is not None:
-                    adjAgents.append(b)
-                    cnt += 1
-
-            adjCount[a.ID] = cnt
-            currentScore += base[a.ID][c] + countSocial(a, cnt)
-
-            # update each neighbor agent's social (their adjacency increased by 1)
-            for b in adjAgents:
-                old = adjCount[b.ID]
-                new = old + 1
-                adjCount[b.ID] = new
-                currentScore += countSocial(b, new) - countSocial(b, old)
-
-            # needed for undo
-            return adjAgents
-
-        def unplace(a, c, adjAgents):
-            nonlocal currentScore
-
-            # undo neighbor social increments
-            for b in adjAgents:
-                old = adjCount[b.ID]
-                new = old - 1
-                adjCount[b.ID] = new
-                currentScore += countSocial(b, new) - countSocial(b, old)
-
-            # undo placed agent contribution
-            cnt = adjCount[a.ID]
-            currentScore -= base[a.ID][c] + countSocial(a, cnt)
-            adjCount.pop(a.ID, None)
-
-            placementByCell.pop(c, None)
-            assign.pop(a.ID, None)
-            usedCells.remove(c)
-
-
-        n = len(ordered)
-
-        # stack frames
-        stack = [("try", 0, 0)]
-
-        # store per depth
-        placedCell = [None] * n
-        placedAdj = [None] * n
-
-        while stack:
-            kind, i, j = stack.pop()
-
-            if kind == "undo":
-                a = ordered[i]
-                c = placedCell[i]
-                adjAgents = placedAdj[i]
-                if c is not None:
-                    unplace(a, c, adjAgents)
-                    placedCell[i] = None
-                    placedAdj[i] = None
-                continue
-
-            # kind == "try"
-            # Bound check
-            if currentScore + suffixBound[i] <= bestScore:
-                continue
-
-            # Finished assignment
-            if i == n:
-                if currentScore > bestScore:
-                    bestScore = currentScore
-                    bestAssign = dict(assign)
-                continue
-
-            a = ordered[i]
-            options = sortedDomains[a.ID]
-
-            # Exhausted options at this depth
-            if j >= len(options):
-                continue
-
-            # Schedule trying the next option at this depth later
-            stack.append(("try", i, j + 1))
-
-            c = options[j]
-            if c in usedCells:
-                continue
-
-            # Place and go deeper
-            adjAgents = place(a, c)
-            placedCell[i] = c
-            placedAdj[i] = adjAgents
-
-            # Schedule undo after exploring deeper
-            stack.append(("undo", i, None))
-
-            # Go deeper
-            stack.append(("try", i + 1, 0))
-
-        # def dfs(i):
-        #   recursive dfs for later maybe
-        #     nonlocal bestScore, bestAssign
-        #     if currentScore + suffixBound[i] <= bestScore:
-        #         return
-
-        #     if i == len(ordered):
-        #         if currentScore > bestScore:
-        #             bestScore = currentScore
-        #             bestAssign = dict(assign)
-        #         return
-
-        #     a = ordered[i]
-        #     for c in sortedDomains[a.ID]:
-        #         if c in usedCells:
-        #             continue
-        #         adjAgents = place(a, c)
-        #         dfs(i + 1)
-        #         unplace(a, c, adjAgents)
-        return bestAssign, bestScore
-    
-    def bruteforcePlacementsGhost(self, agents, timestep, minTtl=1.0):
+    def bruteforcePlacementsGhost(self, agents, timestep):
         decisionStart = time.perf_counter() # Start the timer
         optionsEvaluated = 0
+        bestIndex = -1
+
+        print(f"TIMESTEP: {timestep}")
+        print(f"Number of agents: {len(agents)}")
+
+        if not agents:
+            self.lastDecisionTime = time.perf_counter() - decisionStart
+            self.lastPlacementOptions = 0
+            print("No agents to place")
+            return {}, 0.0
+
         # valid cells per agent
         domains = {}
         for a in agents:
@@ -930,113 +809,114 @@ class Leader(agent.Agent):
                 # only allow empty targets (except staying put)
                 if c != a.cell and c.isOccupied():
                     continue
-                if self.ttlAfterMove(a, c) < minTtl:
-                    continue
-                opts.append(c)
+                opts.append((c.x, c.y))
 
             if not opts:
-                opts = [a.cell]
+                opts = [(a.cell.x, a.cell.y)]
             domains[a.ID] = opts
 
         # order agents by smallest domain first
         ordered = sorted(agents, key=lambda a: len(domains[a.ID]))
         n = len(ordered)
 
-        # precompute base score to find best possible
-        baseScores = {}
-        bestPossibleBase = {}
+        print(f"Domain sizes per agent:")
         for a in ordered:
-            scores = {c: self.predictedHappinessNoSocial(a, c) for c in domains[a.ID]}
-            baseScores[a.ID] = scores
-            bestPossibleBase[a.ID] = max(scores[c] for c in domains[a.ID])
+            print(f"  Agent {a.ID}: {len(domains[a.ID])} options")
 
-        suffixBound = [0.0] * (n + 1)
-        for i in range(n - 1, -1, -1):
-            suffixBound[i] = suffixBound[i + 1] + bestPossibleBase[ordered[i].ID]
-
-        sortedDomains = {}
-        for a in ordered:
-            # sort by base happiness
-            allOptions = sorted(domains[a.ID], key=lambda c: baseScores[a.ID][c], reverse=True)
-            sortedDomains[a.ID] = allOptions
-
-        usedCells = set()
-        assignCells = {}
-        bestScore = float("-inf")
-        bestAssignKeys = {}
-        currBaseScore = 0.0
-
-        # store per depth
-        placedCell = [None] * n
-
-        # stack frames
-        stack = [("try", 0, 0)]
+        if n == 0:
+            self.lastDecisionTime = time.perf_counter() - decisionStart
+            self.lastPlacementOptions = 0
+            return {}, 0.0
+        
+        placements = []
+        stack = [(0, 0, {}, set())]
 
         while stack:
-            kind, i, j = stack.pop()
+            idx, optIdx, placement, usedCells = stack.pop()
+
+            if idx == n:
+                placements.append(placement)
+                continue
+
+            a = ordered[idx]
+            options = domains[a.ID]
+
+            while optIdx < len(options):
+                key = options[optIdx]
+                optIdx += 1
+                if key in usedCells:
+                    continue
+                
+                newPlacement = dict(placement)
+                newPlacement[a.ID] = key
+                newUsedCells = usedCells | {key}
+
+                if optIdx < len(options):
+                    stack.append((idx, optIdx, placement, usedCells))
+
+                stack.append((idx + 1, 0, newPlacement, newUsedCells))
+                break
+
+        totalPlacements = len(placements)
+        print(f"\nGenerated {totalPlacements} unique placements to evaluate")
+
+        self.ghostEval.createGhostEnv(timestep)
+        bestScore = float('-inf')
+        bestAssignKeys = {}
+
+        barLength = 40
+        updateInterval = max(1, totalPlacements // 100)
+
+        for i, placement in enumerate(placements):
             optionsEvaluated += 1
 
-            if kind == "undo":
-                # undo placement at depth i
-                a = ordered[i]
-                c = placedCell[i]
-                if c is not None:
-                    currBaseScore -= baseScores[a.ID][c]
-                    placedCell[i] = None
-                    assignCells.pop(a.ID, None)
-                    usedCells.remove(c)
-                continue
+            if i % updateInterval == 0 or i == totalPlacements - 1:
+                progress = (i + 1) / totalPlacements
+                filledLength = int(barLength * progress)
+                bar = '█' * filledLength + '-' * (barLength - filledLength)
+                percent = progress * 100
+                elapsed = time.perf_counter() - decisionStart
+            
+            # Estimate time remaining
+            if progress > 0:
+                eta = (elapsed / progress) - elapsed
+                eta_str = f"ETA: {eta:.1f}s"
+            else:
+                eta_str = "ETA: --"
+            
+            print(f"\rEvaluating: [{bar}] {percent:5.1f}% ({i+1:,}/{totalPlacements:,}) {eta_str}   ", end="", flush=True)
 
-            if currBaseScore + suffixBound[i] <= bestScore:
-                continue
+            self.ghostEval.setPlacement(placement)
+            score = self.ghostEval.evaluatePlacement()
 
-            # finished assignment
-            if i == n:
-                # convert assignment to (x,y) for ghost world lookup
-                placementByAgentId = {}
-                for a in ordered:
-                    c = assignCells.get(a.ID, a.cell)
-                    placementByAgentId[a.ID] = self.cellKey(c)
+            if score > bestScore:
+                bestScore = score
+                bestAssignKeys = dict(placement)
+                bestIndex = i + 1
 
-                score = self.ghostEval.evaluateOneStep(timestep, placementByAgentId)
-                if score > bestScore:
-                    bestScore = score
-                    bestAssignKeys = dict(placementByAgentId)
-                continue
-
-            a = ordered[i]
-            options = sortedDomains[a.ID]
-
-            # exhausted options at this depth
-            if j >= len(options):
-                continue
-
-            # schedule trying the next option at this depth later
-            stack.append(("try", i, j + 1))
-
-            c = options[j]
-            if c in usedCells:
-                continue
-
-            # place and go deeper
-            usedCells.add(c)
-            assignCells[a.ID] = c
-            placedCell[i] = c
-            currBaseScore += baseScores[a.ID][c]
-
-            # schedule undo after exploring deeper
-            stack.append(("undo", i, None))
-
-            # go deeper
-            stack.append(("try", i + 1, 0))
+        print(f"\rEvaluating: [{'█' * barLength}] 100.0% ({totalPlacements:,}/{totalPlacements:,}) Done!        ")
 
         # convert best assignment back to real cells
         bestAssignCells = {}
         for agentId, key in bestAssignKeys.items():
-            bestAssignCells[agentId] = self.cellFromKey(self.environment, key)
+            x, y = key
+            bestAssignCells[agentId] = self.environment.grid[x][y]
+
+        if not bestAssignCells:
+            for a in agents:
+                bestAssignCells[a.ID] = a.cell
 
         self.lastDecisionTime = time.perf_counter() - decisionStart
         self.lastPlacementOptions = optionsEvaluated
+
+        print(f"DECISION SUMMARY - Timestep {timestep}")
+        print(f"Options evaluated: {optionsEvaluated}")
+        print(f"Best option: #{bestIndex}")
+        print(f"Best score: {bestScore:.4f}")
+        print(f"Decision time: {self.lastDecisionTime:.4f} seconds")
+        print(f"Best placements:")
+        for agentId, cell in bestAssignCells.items():
+            print(f"  Agent {agentId} -> ({cell.x}, {cell.y})")
 
         return bestAssignCells, bestScore
 
