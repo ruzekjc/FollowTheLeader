@@ -791,7 +791,7 @@ class Leader(agent.Agent):
         optionsEvaluated = 0
         bestIndex = -1
 
-        print(f"TIMESTEP: {timestep}")
+        print(f"\n\nTIMESTEP: {timestep}")
         print(f"Number of agents: {len(agents)}")
 
         if not agents:
@@ -820,9 +820,13 @@ class Leader(agent.Agent):
         n = len(ordered)
 
         print(f"Domain sizes per agent:")
+        estimatedPlacements = 1
         for a in ordered:
             print(f"  Agent {a.ID}: {len(domains[a.ID])} options")
+            estimatedPlacements *= len(domains[a.ID])
 
+        print(f"Estimated placements to evaluate: {estimatedPlacements:,}")
+        
         if n == 0:
             self.lastDecisionTime = time.perf_counter() - decisionStart
             self.lastPlacementOptions = 0
@@ -831,11 +835,35 @@ class Leader(agent.Agent):
         placements = []
         stack = [(0, 0, {}, set())]
 
+        self.ghostEval.createGhostEnv(timestep)
+        bestScore = float('-inf')
+        bestAssignKeys = {}
+
+        barLength = 40
+        lastPrintTime = decisionStart
+        updateInterval = 0.5
+
+        stack = [(0, 0, {}, set())]
+
         while stack:
             idx, optIdx, placement, usedCells = stack.pop()
 
             if idx == n:
-                placements.append(placement)
+                optionsEvaluated += 1
+                currentTime = time.perf_counter()
+                if currentTime - lastPrintTime >= updateInterval:
+                    elapsed = currentTime - decisionStart
+                    rate = optionsEvaluated / elapsed if elapsed > 0 else 0
+                    print(f"\rEvaluated: {optionsEvaluated:,} placements | {rate:,.0f}/sec | Best: {bestScore:.4f}   ", end="", flush=True)
+                    lastPrintTime = currentTime
+
+                self.ghostEval.setPlacement(placement)
+                score = self.ghostEval.evaluatePlacement()
+
+                if score > bestScore:
+                    bestScore = score
+                    bestAssignKeys = dict(placement)
+                    bestIndex = optionsEvaluated
                 continue
 
             a = ordered[idx]
@@ -857,44 +885,7 @@ class Leader(agent.Agent):
                 stack.append((idx + 1, 0, newPlacement, newUsedCells))
                 break
 
-        totalPlacements = len(placements)
-        print(f"\nGenerated {totalPlacements} unique placements to evaluate")
-
-        self.ghostEval.createGhostEnv(timestep)
-        bestScore = float('-inf')
-        bestAssignKeys = {}
-
-        barLength = 40
-        updateInterval = max(1, totalPlacements // 100)
-
-        for i, placement in enumerate(placements):
-            optionsEvaluated += 1
-
-            if i % updateInterval == 0 or i == totalPlacements - 1:
-                progress = (i + 1) / totalPlacements
-                filledLength = int(barLength * progress)
-                bar = '█' * filledLength + '-' * (barLength - filledLength)
-                percent = progress * 100
-                elapsed = time.perf_counter() - decisionStart
-            
-            # Estimate time remaining
-            if progress > 0:
-                eta = (elapsed / progress) - elapsed
-                eta_str = f"ETA: {eta:.1f}s"
-            else:
-                eta_str = "ETA: --"
-            
-            print(f"\rEvaluating: [{bar}] {percent:5.1f}% ({i+1:,}/{totalPlacements:,}) {eta_str}   ", end="", flush=True)
-
-            self.ghostEval.setPlacement(placement)
-            score = self.ghostEval.evaluatePlacement()
-
-            if score > bestScore:
-                bestScore = score
-                bestAssignKeys = dict(placement)
-                bestIndex = i + 1
-
-        print(f"\rEvaluating: [{'█' * barLength}] 100.0% ({totalPlacements:,}/{totalPlacements:,}) Done!        ")
+        print(f"\rEvaluated: {optionsEvaluated:,} placements | Done!{' ' * 40}")
 
         # convert best assignment back to real cells
         bestAssignCells = {}
