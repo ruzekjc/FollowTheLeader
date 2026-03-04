@@ -1156,6 +1156,7 @@ class Agent:
 
     def findSpaceHappiness(self):
         step = 2 / len(self.cellsInRange)
+        # Adjust neighborhood size since agent is included in its own neighborhood and apply stepwise scoring
         occupiedRate = (len(self.neighborhood) - 1) * step
         spaceHappiness = -1 * (occupiedRate - 1)
         return spaceHappiness * self.happinessUnit
