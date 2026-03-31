@@ -17,11 +17,14 @@ class Agent:
         self.decisionModelFactor = configuration["decisionModelFactor"]
         self.decisionModelLookaheadDiscount = configuration["decisionModelLookaheadDiscount"]
         self.decisionModelLookaheadFactor = configuration["decisionModelLookaheadFactor"]
+        self.decisionModelRacismFactor = configuration["decisionModelRacismFactor"]
+        self.decisionModelSexismFactor = configuration["decisionModelSexismFactor"]
         self.decisionModelTribalFactor = configuration["decisionModelTribalFactor"]
         self.depressionFactor = configuration["depressionFactor"]
         self.diseaseProtectionChance = configuration["diseaseProtectionChance"]
+        self.dynamicDecisionModelFactor = configuration["dynamicDecisionModelFactor"]
         self.dynamicSelfishnessFactor = configuration["dynamicSelfishnessFactor"]
-        self.dynamicTemperanceFactor = configuration["dynamicTemperanceFactor"]
+        self.dynamicSocialPressureFactor = configuration["dynamicSocialPressureFactor"]
         self.fertilityAge = configuration["fertilityAge"]
         self.fertilityFactor = configuration["fertilityFactor"]
         self.follower = configuration["follower"]
@@ -37,6 +40,7 @@ class Agent:
         self.movement = configuration["movement"]
         self.movementMode = configuration["movementMode"]
         self.neighborhoodMode = configuration["neighborhoodMode"]
+        self.racialTags = configuration["racialTags"]
         self.seed = configuration["seed"]
         self.selfishnessFactor = configuration["selfishnessFactor"]
         self.sex = configuration["sex"]
@@ -50,7 +54,6 @@ class Agent:
         self.tagging = configuration["tagging"]
         self.tagPreferences = configuration["tagPreferences"]
         self.tags = configuration["tags"]
-        self.temperanceFactor = configuration["temperanceFactor"]
         self.tradeFactor = configuration["tradeFactor"]
         self.universalSpice = configuration["universalSpice"]
         self.universalSugar = configuration["universalSugar"]
@@ -101,6 +104,7 @@ class Agent:
         self.neighborhood = []
         self.neighbors = []
         self.nice = 0
+        self.race = self.findRace()
         self.socialHappiness = 0
         self.socialNetwork = {"father": None, "mother": None, "children": [], "friends": [], "creditors": [], "debtors": [], "mates": []}
         self.spaceHappiness = 0
@@ -130,7 +134,7 @@ class Agent:
         self.reproductionWithExperimentalGroup = 0
         self.tradeWithControlGroup = 0
         self.tradeWithExperimentalGroup = 0
-
+        
         # Change metrics for depressed agents
         if self.depressionFactor == 1:
             self.depressed = True
@@ -144,7 +148,8 @@ class Agent:
                              "preyWealth": 0, "tradePartners": 0, "diseasesSpread": 0, "mates": 0,
                              "neighbors": 0, "validMoves": 0, "moveRank": 0, "lendingPartners": 0,
                              "pollutionDifference": 0, "timeToLiveDifference": 0, "neighborsInTribe": 0,
-                             "neighborsNotInTribe": 0, "experimentalGroupNeighbors": 0, "controlGroupNeighbors": 0}
+                             "neighborsNotInTribe": 0, "sameRaceNeighbors": 0, "differentRaceNeighbors": 0,
+                             "experimentalGroupNeighbors": 0, "controlGroupNeighbors": 0}
 
     def addAgentToSocialNetwork(self, agent):
         agentID = agent.ID
@@ -152,6 +157,10 @@ class Agent:
             return
         self.socialNetwork[agentID] = {"agent": agent, "lastSeen": self.lastMovedTimestep, "timesVisited": 1, "timesReproduced": 0,
                                          "timesTraded": 0, "timesLoaned": 0, "marginalRateOfSubstitution": 0}
+        
+        if self.decisionModel == "temperance":
+            # If this is a temperance agent, initialize opinion to neutral (0.5)
+            self.socialNetwork[agentID]["opinion"] = 0.5
 
     def addChildToCell(self, mate, cell, childConfiguration):
         sugarscape = self.cell.environment.sugarscape
@@ -805,11 +814,13 @@ class Agent:
         "decisionModelFactor": [self.decisionModelFactor, mate.decisionModelFactor],
         "decisionModelLookaheadDiscount": [self.decisionModelLookaheadDiscount, mate.decisionModelLookaheadDiscount],
         "decisionModelLookaheadFactor": [self.decisionModelLookaheadFactor, mate.decisionModelLookaheadFactor],
+        "decisionModelRacismFactor": [self.decisionModelRacismFactor, mate.decisionModelRacismFactor],
+        "decisionModelSexismFactor": [self.decisionModelSexismFactor, mate.decisionModelSexismFactor],
         "decisionModelTribalFactor": [self.decisionModelTribalFactor, mate.decisionModelTribalFactor],
+        "dynamicDecisionModelFactor" : [self.dynamicDecisionModelFactor, mate.dynamicDecisionModelFactor],
         "dynamicSelfishnessFactor": [self.dynamicSelfishnessFactor, mate.dynamicSelfishnessFactor],
-        "dynamicTemperanceFactor" : [self.dynamicTemperanceFactor, mate.dynamicTemperanceFactor],
+        "dynamicSocialPressureFactor" : [self.dynamicSocialPressureFactor, mate.dynamicSocialPressureFactor],
         "selfishnessFactor" : [self.selfishnessFactor, mate.selfishnessFactor],
-        "temperanceFactor" : [self.temperanceFactor, mate.temperanceFactor]
         }
         childEndowment = {"seed": self.seed, "follower": self.follower}
         randomNumberReset = random.getstate()
@@ -850,6 +861,7 @@ class Agent:
         hashNum = int(hashed.hexdigest(), 16)
         random.seed(hashNum + self.timestep)
         childTags = []
+        childRacialTags = []
         childImmuneSystem = []
         mateTags = mate.tags
         mismatchBits = [0, 1]
@@ -864,6 +876,16 @@ class Agent:
         childEndowment["tags"] = childTags
         childEndowment["tagPreferences"] = self.tagPreferences
         childEndowment["tagging"] = self.tagging
+
+        hashed = hashlib.md5("racialTags".encode())
+        hashNum = int(hashed.hexdigest(), 16)
+        random.seed(hashNum + self.timestep)
+        if self.racialTags == None:
+            childRacialTags = None
+        else:
+            for i in range(len(self.racialTags)):
+                childRacialTags.append(random.choice([self.racialTags[i], mate.racialTags[i]]))
+        childEndowment["racialTags"] = childRacialTags
 
         # Current implementation randomly assigns depressed state at agent birth
         depressionPercentage = self.cell.environment.sugarscape.configuration["agentDepressionPercentage"]
@@ -935,6 +957,34 @@ class Agent:
             else:
                 familyHappiness -= self.happinessUnit
         return math.erf(familyHappiness)
+
+    def findGroupBiasCellWelfareModifier(self, cell):
+        potentialNeighbors = cell.findNeighborAgents()
+        modifier = 1
+        if len(potentialNeighbors) > 0:
+            inGroupRace = 0
+            inGroupSex = 0
+            inGroupTribe = 0
+            for neighbor in potentialNeighbors:
+                neighborRace = neighbor.findRace()
+                if neighborRace == self.findRace() or neighborRace in self.cell.environment.inGroupRaces:
+                    inGroupRace += 1
+                if neighbor.sex == self.sex:
+                    inGroupSex += 1
+                if neighbor.findTribe() == self.findTribe():
+                    inGroupTribe += 1
+            # Increase value of cell according to proportion of in-group neighbors
+            if self.decisionModelRacismFactor > 0:
+                raceProportion = inGroupRace / len(potentialNeighbors)
+                # TODO: Detetermine whether 0.5 is the correct scaling factor
+                modifier *= (0.5 + (self.decisionModelRacismFactor * raceProportion) + ((1 - self.decisionModelRacismFactor) * (1 - raceProportion)))
+            if self.sex in self.cell.environment.sexistGroups and self.decisionModelSexismFactor > 0:
+                sexProportion = inGroupSex / len(potentialNeighbors)
+                modifier *= (0.5 + (self.decisionModelSexismFactor * sexProportion) + ((1 - self.decisionModelSexismFactor) * (1 - sexProportion)))
+            if self.decisionModelTribalFactor > 0:
+                tribeProportion = inGroupTribe / len(potentialNeighbors)
+                modifier *= (0.5 + (self.decisionModelTribalFactor * tribeProportion) + ((1 - self.decisionModelTribalFactor) * (1 - tribeProportion)))
+        return modifier
 
     def findHammingDistanceInTags(self, neighbor):
         if self.tags == None:
@@ -1014,6 +1064,12 @@ class Agent:
             return 1 / sugarMetabolism
         return spiceNeed / sugarNeed
 
+    def findRace(self):
+        if self.racialTags == None:
+            return None
+        # race is determined by most common element in racialTags
+        return max(set(self.racialTags), key=self.racialTags.count)
+
     def findRetaliatorsInVision(self):
         retaliators = {}
         for cell in self.cellsInRange.keys():
@@ -1039,12 +1095,21 @@ class Agent:
     def findSugarMetabolism(self):
         return max(0, self.sugarMetabolism + self.sugarMetabolismModifier)
 
-    def findTimeToLive(self, ageLimited=False):
+    def findTimeToLive(self, ageLimited=False, potentialCell=None):
         spiceMetabolism = self.findSpiceMetabolism()
         sugarMetabolism = self.findSugarMetabolism()
+        sugar = self.sugar
+        spice = self.spice
+        if potentialCell != None:
+            if potentialCell.isOccupied() == True:
+                combatMaxLoot = self.cell.environment.maxCombatLoot
+                sugar += min(combatMaxLoot, potentialCell.agent.sugar)
+                spice += min(combatMaxLoot, potentialCell.agent.spice)
+            sugar += potentialCell.sugar
+            spice += potentialCell.spice
         # If no sugar or spice metabolism, set days to death for that resource to seemingly infinite
-        sugarTimeToLive = self.sugar / sugarMetabolism if sugarMetabolism > 0 else sys.maxsize
-        spiceTimeToLive = self.spice / spiceMetabolism if spiceMetabolism > 0 else sys.maxsize
+        sugarTimeToLive = sugar / sugarMetabolism if sugarMetabolism > 0 else sys.maxsize
+        spiceTimeToLive = spice / spiceMetabolism if spiceMetabolism > 0 else sys.maxsize
         # If an agent has basic income, include the income for at least as many timesteps as they can already survive
         if self.universalSugar != 0:
             sugarIncome = (sugarTimeToLive * self.universalSugar) / self.cell.environment.universalSugarIncomeInterval
@@ -1055,7 +1120,8 @@ class Agent:
         timeToLive = min(sugarTimeToLive, spiceTimeToLive)
         if ageLimited == True:
             timeToLive = min(timeToLive, self.maxAge - self.age)
-        self.timeToLive = timeToLive
+        if potentialCell == None:
+            self.timeToLive = timeToLive
         return timeToLive
 
     def findTribe(self):
@@ -1068,6 +1134,14 @@ class Agent:
         tribeSize = possibleZeroes / numTribes
         tribe = min(math.ceil((self.tagZeroes + 1) / tribeSize) - 1, numTribes - 1)
         return tribe
+
+    def findValueOfCell(self, cell, preySugar, preySpice):
+        # Modify value of cell relative to the metabolism needs of the agent
+        value = self.findWelfare(((cell.sugar + preySugar) / (1 + cell.pollution)), ((cell.spice + preySpice) / (1 + cell.pollution)))
+        if self.decisionModelRacismFactor >= 0 or (self.sex in self.cell.environment.sexistGroups and self.decisionModelSexismFactor >= 0) or self.decisionModelTribalFactor >= 0:
+            # Modify welfare according to group preferences
+            value *= self.findGroupBiasCellWelfareModifier(cell)
+        return value
 
     def findVision(self):
         return max(0, self.vision + self.visionModifier)
@@ -1337,9 +1411,7 @@ class Agent:
             # Aggression factor may lead agent to see more reward than possible meaning combat itself is a reward
             welfarePreySugar = aggression * min(combatMaxLoot, preySugar)
             welfarePreySpice = aggression * min(combatMaxLoot, preySpice)
-
-            # Modify value of cell relative to the metabolism needs of the agent
-            welfare = self.findWelfare(((cell.sugar + welfarePreySugar) / (1 + cell.pollution)), ((cell.spice + welfarePreySpice) / (1 + cell.pollution)))
+            welfare = self.findValueOfCell(cell, welfarePreySugar, welfarePreySpice)
 
             # Avoid attacking agents protected via retaliation
             if prey != None and retaliators[preyTribe] > self.sugar + self.spice + welfare:
@@ -1512,12 +1584,15 @@ class Agent:
         experimentalNeighbors = 0
         sugarscape = self.cell.environment.sugarscape
         neighborsInTribe = 0
+        sameRaceNeighbors = 0
         for neighbor in self.neighbors:
             if neighbor.tribe == self.tribe:
                 neighborsInTribe += 1
-            if sugarscape.experimentalGroup != None and prey.isInGroup(sugarscape.experimentalGroup):
+            if neighbor.race == self.race:
+                sameRaceNeighbors += 1
+            if sugarscape.experimentalGroup != None and neighbor.isInGroup(sugarscape.experimentalGroup):
                 experimentalNeighbors += 1
-            elif sugarscape.experimentalGroup != None and prey.isInGroup(sugarscape.experimentalGroup, True):
+            elif sugarscape.experimentalGroup != None and neighbor.isInGroup(sugarscape.experimentalGroup, True):
                 controlNeighbors += 1
 
         self.lastTimeToLive = self.timeToLive
@@ -1532,7 +1607,8 @@ class Agent:
                              "preyWealth": preyWealth, "tradePartners": tradePartners, "diseasesSpread": diseasesSpread, "mates": mates,
                              "neighbors": len(self.neighbors), "validMoves": self.lastValidMoves, "moveRank": self.lastMoveRank, "lendingPartners": loans,
                              "pollutionDifference": pollutionDifference, "timeToLiveDifference": timeToLiveDifference, "neighborsInTribe": neighborsInTribe,
-                             "neighborsNotInTribe": len(self.neighbors) - neighborsInTribe, "experimentalGroupNeighbors": experimentalNeighbors,
+                             "neighborsNotInTribe": len(self.neighbors) - neighborsInTribe, "sameRaceNeighbors": sameRaceNeighbors,
+                             "differentRaceNeighbors": len(self.neighbors) - sameRaceNeighbors, "experimentalGroupNeighbors": experimentalNeighbors,
                              "controlGroupNeighbors": controlNeighbors}
 
         sugarscape.agentRuntimeStats.append(self.runtimeStats)
