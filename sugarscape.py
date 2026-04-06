@@ -83,7 +83,8 @@ class Sugarscape:
         # TODO: Streamline naming
         self.runtimeStats = {"timestep": 0, "population": 0, "meanMetabolism": 0, "meanMovement": 0, "meanVision": 0, "meanWealth": 0, "meanAge": 0, "giniCoefficient": 0,
                              "meanTradePrice": 0, "tradeVolume": 0, "maxWealth": 0, "minWealth": 0, "meanHappiness": 0, "meanWealthHappiness": 0, "meanHealthHappiness": 0,
-                             "meanSocialHappiness": 0, "meanFamilyHappiness": 0, "meanConflictHappiness": 0, "meanAgeAtDeath": 0, "seed": self.seed, "agentsReplaced": 0,
+                             "meanSocialHappiness": 0, "meanFamilyHappiness": 0, "meanConflictHappiness": 0, "meanSpaceHappiness": 0, "meanFoodSecurityHappiness": 0,
+                             "meanAgeAtDeath": 0, "seed": self.seed, "agentsReplaced": 0,
                              "agentsBorn": 0, "agentStarvationDeaths": 0, "agentDiseaseDeaths": 0, "environmentWealthCreated": 0, "agentWealthTotal": 0,
                              "environmentWealthTotal": 0, "agentWealthCollected": 0, "agentWealthBurnRate": 0, "agentMeanTimeToLive": 0, "agentTotalMetabolism": 0,
                              "agentCombatDeaths": 0, "agentAgingDeaths": 0, "agentDeaths": 0, "largestRace": 0, "largestTribe": 0, "largestRaceSize": 0, "largestTribeSize": 0,
@@ -1020,12 +1021,14 @@ class Sugarscape:
         meanAge = 0
         meanConflictHappiness = 0
         meanFamilyHappiness = 0
+        meanFoodSecurityHappiness = 0
         meanHappiness = 0
         meanHealthHappiness = 0
         meanMetabolism = 0
         meanMovement = 0
         meanSelfishness = 0
         meanSocialHappiness = 0
+        meanSpaceHappiness = 0
         meanSpiceMetabolism = 0
         meanSugarMetabolism = 0
         combinedMetabolism = 0
@@ -1141,6 +1144,7 @@ class Sugarscape:
             meanSocialHappiness += agent.socialHappiness
             meanConflictHappiness += agent.conflictHappiness
             meanFoodSecurityHappiness += agent.foodSecurityHappiness
+            meanSpaceHappiness += agent.spaceHappiness
             if agent.tradeVolume > 0:
                 meanTradePrice += max(agent.spicePrice, agent.sugarPrice)
                 tradeVolume += agent.tradeVolume
@@ -1333,6 +1337,7 @@ class Sugarscape:
             meanSocialHappiness = round(meanSocialHappiness / numAgents, 2)
             meanTradePrice = round(meanTradePrice / numTraders, 2) if numTraders > 0 else 0
             meanFoodSecurityHappiness = round(meanFoodSecurityHappiness / numAgents, 2)
+            meanSpaceHappiness = round(meanSpaceHappiness / numAgents, 2)
             meanVision = round(meanVision / numAgents, 2)
             meanWealth = round(meanWealth / numAgents, 2)
             meanWealthHappiness = round(meanWealthHappiness / numAgents, 2)
@@ -1399,7 +1404,7 @@ class Sugarscape:
                         "largestTribe": maxTribe, "largestTribeSize": maxTribeSize, "maxWealth": maxWealth,
                         "meanAge": meanAge, "meanAgeAtDeath": meanAgeAtDeath, "meanConflictHappiness": meanConflictHappiness,
                         "meanFamilyHappiness": meanFamilyHappiness, "meanHappiness": meanHappiness, "meanHealthHappiness": meanHealthHappiness,
-                        "meanFoodSecurityHappiness": meanFoodSecurityHappiness,
+                        "meanFoodSecurityHappiness": meanFoodSecurityHappiness, "meanSpaceHappiness": meanSpaceHappiness,
                         "meanMetabolism": meanMetabolism, "meanMovement": meanMovement, "meanMoveDifferenceFromOptimal": meanMoveDifferenceFromOptimal,
                         "meanMoveRank": meanMoveRank, "meanNeighbors": meanNeighbors, "meanSelfishness": meanSelfishness,
                         "meanSocialHappiness": meanSocialHappiness, "meanTradePrice": meanTradePrice, "meanWealth": meanWealth,

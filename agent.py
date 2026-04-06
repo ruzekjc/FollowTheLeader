@@ -1185,6 +1185,17 @@ class Agent:
         diff = 1.5 - crowdCount
         return math.erf(diff * self.happinessUnit)
 
+    def findFoodSecurityHappiness(self):
+        diffTTL = self.findTimeToLive(False) - self.lastTimeToLive
+        return math.erf(diffTTL * self.happinessUnit)
+
+    def findSpaceHappiness(self):
+        step = 2 / len(self.cellsInRange)
+        # Adjust neighborhood size since agent is included in its own neighborhood and apply stepwise scoring
+        occupiedRate = (len(self.neighborhood) - 1) * step
+        spaceHappiness = -1 * (occupiedRate - 1)
+        return spaceHappiness * self.happinessUnit
+
     def findWelfare(self, sugarReward, spiceReward):
         spiceMetabolism = self.findSpiceMetabolism()
         sugarMetabolism = self.findSugarMetabolism()
