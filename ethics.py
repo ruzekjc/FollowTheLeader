@@ -1,5 +1,6 @@
 import math
 import agent
+import copy
 import math
 import random
 import sys
@@ -9,7 +10,6 @@ import cell
 class Asimov(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
         super().__init__(agentID, birthday, cell, configuration)
-        self.lastTimeToLive = 0
 
     def findBestEthicalCell(self, cells, greedyBestCell=None):
         if len(cells) == 0:
@@ -161,6 +161,8 @@ class Bentham(agent.Agent):
         neighborhoodSize = len(self.neighborhood)
         futureNeighborhoodSize = len(self.findNeighborhood(cell)) if self.decisionModelLookaheadFactor != 0 else 1
         for neighbor in self.neighborhood:
+            if neighbor.isAlive() == False:
+                continue
             certainty = 1 if neighbor.canReachCell(cell) == True else 0
             # Skip if agent cannot reach cell
             if certainty == 0:
@@ -197,6 +199,20 @@ class Bentham(agent.Agent):
                 if cell == neighbor.cell and neighborCellValue > -1:
                     neighborCellValue = -1
 
+            if self.decisionModelAgeismFactor >= 0:
+                neighborAge = neighbor.age
+                inRelativeAgeWindow = abs(neighborAge - self.age) <= self.cell.environment.inGroupAgeRelativeRange
+                inAbsoluteAgeRange = False
+                for minAge, maxAge in self.cell.environment.inGroupAgeAbsoluteRanges:
+                    if neighborAge >= minAge and (neighborAge <= maxAge or maxAge == -1):
+                        inAbsoluteAgeRange = True
+                        break
+                # Neighbor is considered in-group for age if within relative or absolute age range
+                if inRelativeAgeWindow or inAbsoluteAgeRange:
+                    neighborCellValue *= self.decisionModelAgeismFactor
+                else:
+                    neighborCellValue *= 1 - self.decisionModelAgeismFactor
+            
             if self.decisionModelRacismFactor >= 0:
                 neighborRace = neighbor.findRace()
                 if neighborRace == self.race or neighborRace in self.cell.environment.inGroupRaces:
@@ -253,307 +269,17 @@ class Bentham(agent.Agent):
     def spawnChild(self, childID, birthday, cell, configuration):
         return Bentham(childID, birthday, cell, configuration)
 
-class GhostAgent(agent.Agent):
-    def __init__(self, agentID, birthday, cell, configuration, meanWealth = 0):
-        self.ID = agentID
-        self.born = birthday
-        self.cell = cell
-
-        # store meanWealth
-        self.ghostMeanWealth = meanWealth
-        
-        # Copy only what is needed for happiness/metabolism calc
-        self.sugar = configuration["sugar"]
-        self.spice = configuration["spice"]
-        self.sugarMetabolism = configuration["sugarMetabolism"]
-        self.spiceMetabolism = configuration["spiceMetabolism"]
-        self.movement = configuration["movement"]
-        self.vision = configuration["vision"]
-        self.maxAge = configuration["maxAge"]
-        self.age = configuration["age"]
-        self.alive = True
-        self.sex = configuration["sex"]
-        self.tags = configuration["tags"]
-        self.timestep = 0
-        self.lastCombatTimestep = -1
-        
-        # happiness attributes
-        self.happiness = 0.0
-        self.happinessUnit = configuration.get("happinessUnit", 1)
-        self.decisionModel = configuration.get("decisionModel", "none")
-        self.maxFriends = configuration.get("maxFriends", 0)
-        
-        # Social network placeholders
-        self.socialNetwork = {"friends": [], "children": [], "mates": []}
-        
-        # health
-        self.diseases = []
-        self.depressed = configuration.get("depressed", False)
-
-        self.cellsInRange = {}
-        self.neighborhood = []
-
-        self.conflictHappiness = 0.0
-        self.healthHappiness = configuration["happinessUnit"]
-        self.familyHappiness = 0.0
-        self.socialHappiness = 0.0
-        self.wealthHappiness = 0.0
-
-        self.foodSecurityHappiness = 0.0
-        self.lastTtlNoAgeLimit = configuration.get("lastTtlNoAgeLimit", 0.0)
-
-    # need to override this one so it doesn't touch the global environment
-    def findWealthHappiness(self):
-        wealth = self.sugar + self.spice
-
-        diffWealth = wealth - self.ghostMeanWealth
-        diffWealth *= self.happinessUnit
-        return math.erf(diffWealth)
-    
-    def findFoodSecurityHappiness(self):
-        postSugar = self.sugar + self.cell.sugar
-        postSpice = self.spice + self.cell.spice
-        
-        sugarTtl = postSugar / self.sugarMetabolism if self.sugarMetabolism > 0 else 1e9
-        spiceTtl = postSpice / self.spiceMetabolism if self.spiceMetabolism > 0 else 1e9
-        
-        currentTtl = min(sugarTtl, spiceTtl)
-        diff = currentTtl - self.lastTtlNoAgeLimit
-        return math.erf(diff * self.happinessUnit)
-
-    def findSocialHappiness(self):
-        friends = self.socialNetwork.get("friends", [])
-        if self.maxFriends == 0:
-            return 0.0
-        friendCount = min(len(friends), self.maxFriends)
-        step = 2 / self.maxFriends
-        return ((friendCount * step) - 1)* self.happinessUnit
-    
-    def findFamilyHappiness(self):
-        children = self.socialNetwork.get("children", [])
-        mates = self.socialNetwork.get("mates", [])
-        familyCount = len(children) + len(mates)
-
-        if familyCount == 0:
-            return 0.0
-        return self.happinessUnit * min(familyCount / 3.0, 1.0)
-    
-    def findHappiness(self):
-        return (self.conflictHappiness + self.familyHappiness 
-                + self.healthHappiness + self.socialHappiness 
-                + self.wealthHappiness + self.foodSecurityHappiness)
-    
-class GhostCell:
-    def __init__(self, x, y, environment):
-        self.x = x
-        self.y = y
-        self.environment = environment
-        self.agent = None
-        self.sugar = 0
-        self.spice = 0
-        self.maxSugar = 0
-        self.maxSpice = 0
-        self.pollution = 0
-        self.neighbors = {}
-
-class GhostScape:
-    def __init__(self):
-        self.agents = []
-        self.runtimeStats = {}
-        self.timestep = 0
-
-class GhostEnv:
-    def __init__(self, realEnv):
-        self.width = realEnv.width
-        self.height = realEnv.height
-        self.grid = [[None for i in range(self.height)] for j in range(self.width)]
-        self.wraparound = realEnv.wraparound
-        self.equator = realEnv.equator
-        self.maxCombatLoot = realEnv.maxCombatLoot
-        self.globalMaxSugar = realEnv.globalMaxSugar
-        self.globalMaxSpice = realEnv.globalMaxSpice
-        self.neighborhoodMode = realEnv.neighborhoodMode
-        self.sugarscape = GhostScape()
-        
-        # Copy pollution settings
-        self.pollutionStart = realEnv.pollutionStart
-        self.pollutionEnd = realEnv.pollutionEnd
-        self.pollutionDiffusionStart = realEnv.pollutionDiffusionStart
-        self.pollutionDiffusionEnd = realEnv.pollutionDiffusionEnd
-        self.pollutionDiffusionDelay = realEnv.pollutionDiffusionDelay
-        self.spiceConsumptionPollutionFactor = realEnv.spiceConsumptionPollutionFactor
-        self.sugarConsumptionPollutionFactor = realEnv.sugarConsumptionPollutionFactor
-        self.sugarProductionPollutionFactor = realEnv.sugarProductionPollutionFactor
-        self.spiceProductionPollutionFactor = realEnv.spiceProductionPollutionFactor
-        self.universalSpiceIncome = realEnv.universalSpiceIncomeInterval
-        self.universalSugarIncome = realEnv.universalSugarIncomeInterval
-
-class GhostEvaluator:
-    def __init__(self, environment):
-        self.realEnvironment = environment
-        self.ghostEnv = None
-        self.ghostMap = {}
-        self.originalCellStats = {}
-
-    # create environment once
-    def createGhostEnv(self, timestep):
-        realEnv = self.realEnvironment
-        width = realEnv.width
-        height = realEnv.height
-
-        realStats = realEnv.sugarscape.runtimeStats
-        currentMeanWealth = realStats.get("meanWealth", 0)
-
-        class GhostScape:
-            def __init__(self):
-                self.agents = []
-                self.runtimeStats = {"meanWealth": currentMeanWealth}
-                self.timestep = timestep
-        
-        class GhostEnvClass:
-            def __init__(self, w, h, scape, realEnv):
-                self.width = w
-                self.height = h
-                self.grid = [[None for _ in range(h)] for _ in range(w)]
-                self.sugarscape = scape
-                self.wraparound = realEnv.wraparound
-                self.equator = realEnv.equator
-                self.maxCombatLoot = realEnv.maxCombatLoot
-                self.globalMaxSugar = realEnv.globalMaxSugar
-                self.globalMaxSpice = realEnv.globalMaxSpice
-
-        ghostScape = GhostScape()
-        self.ghostEnv = GhostEnvClass(width, height, ghostScape, realEnv)
-
-        for x in range (realEnv.width):
-            for y in range(realEnv.height):
-                realCell = realEnv.grid[x][y]
-
-                ghostCell = cell.Cell(x,y,self.ghostEnv)
-                ghostCell.maxSugar = realCell.maxSugar
-                ghostCell.maxSpice = realCell.maxSpice
-                ghostCell.sugar = realCell.sugar
-                ghostCell.spice = realCell.spice
-                ghostCell.pollution = realCell.pollution
-                self.ghostEnv.grid[x][y] = ghostCell
-
-                self.originalCellStats[(x,y)] = {
-                    "sugar": realCell.sugar,
-                    "spice": realCell.spice
-                }
-
-        realAgents = [a for a in self.realEnvironment.sugarscape.agents if a.isAlive()]
-        self.ghostAgentMap = {}
-        ghostAgents = []
-        
-        for realAgent in realAgents:
-            # calculate target cell
-            targetCell = self.ghostEnv.grid[realAgent.cell.x][realAgent.cell.y]
-
-            config = {
-                "sugar": realAgent.sugar,
-                "spice": realAgent.spice,
-                "sugarMetabolism": realAgent.sugarMetabolism,
-                "spiceMetabolism": realAgent.spiceMetabolism,
-                "movement": realAgent.movement,
-                "vision": realAgent.vision,
-                "maxAge": realAgent.maxAge,
-                "age": realAgent.age,
-                "sex": realAgent.sex,
-                "tags": realAgent.tags,
-                "happinessUnit": getattr(realAgent, "happinessUnit", 1),
-                "decisionModel": getattr(realAgent, "decisionModel", "none"),
-                "maxFriends": getattr(realAgent, "maxFriends", 0),
-                "depressed": getattr(realAgent, "depressed", False),
-                "lastTtlNoAgeLimit": getattr(realAgent, "lastTtlNoAgeLimit", 0.0)
-            }
-
-            ghostAgent = GhostAgent(realAgent.ID, realAgent.born, targetCell, config, meanWealth=currentMeanWealth)
-            ghostAgents.append(ghostAgent)
-            self.ghostAgentMap[realAgent.ID] = ghostAgent
-
-        self.ghostEnv.sugarscape.agents = ghostAgents
-
-        # rebuild social networks only if they exist
-        for realAgent in realAgents:
-            if realAgent.ID not in self.ghostAgentMap:
-                continue
-            ghostAgent = self.ghostAgentMap[realAgent.ID]
-
-            for friend in realAgent.socialNetwork.get("friends", []):
-                realFriend = friend["friend"]
-
-                if realFriend.ID in self.ghostAgentMap:
-                    ghostAgent.socialNetwork["friends"].append({
-                        "friend": self.ghostAgentMap[realFriend.ID],
-                        "hammingDistance": friend["hammingDistance"]
-                        })
-                    
-            # rebuild children and mates relationships if they exist
-            for realChild in realAgent.socialNetwork.get("children", []):
-                if realChild.ID in self.ghostAgentMap:
-                    ghostAgent.socialNetwork["children"].append(self.ghostAgentMap[realChild.ID])
-
-            for realMate in realAgent.socialNetwork.get("mates", []):
-                if realMate.ID in self.ghostAgentMap:
-                    ghostAgent.socialNetwork["mates"].append(self.ghostAgentMap[realMate.ID])
-        return self.ghostEnv
-    
-    def setPlacement(self, placementById):
-        for x in range(self.ghostEnv.width):
-            for y in range(self.ghostEnv.height):
-                self.ghostEnv.grid[x][y].agent = None
-
-                #reset cell resources to original
-                stats = self.originalCellStats.get((x,y), None)
-                self.ghostEnv.grid[x][y].sugar = stats["sugar"] if stats else 0
-                self.ghostEnv.grid[x][y].spice = stats["spice"] if stats else 0
-
-        for agentId, cell in placementById.items():
-            if agentId in self.ghostAgentMap:
-                ghostAgent = self.ghostAgentMap[agentId]
-                targetCell = self.ghostEnv.grid[cell[0]][cell[1]]
-                ghostAgent.cell = targetCell
-                targetCell.agent = ghostAgent
-
-    def evaluatePlacement(self):
-        for ghostAgent in self.ghostEnv.sugarscape.agents:
-            ghostAgent.familyHappiness = ghostAgent.findFamilyHappiness()
-            ghostAgent.socialHappiness = ghostAgent.findSocialHappiness()
-            ghostAgent.wealthHappiness = ghostAgent.findWealthHappiness()
-            ghostAgent.foodSecurityHappiness = ghostAgent.findFoodSecurityHappiness()
-            ghostAgent.happiness = ghostAgent.findHappiness()
-
-        total = 0.0
-        for a in self.ghostEnv.sugarscape.agents:
-            total += float(a.happiness)
-
-        return total
-
-    def aggregateHappiness(self):
-        # sum per-agent happiness fields
-        total = 0.0
-        for a in self.ghostEnv.sugarscape.agents:
-            if hasattr(a, "happiness"):
-                total += float(a.happiness)
-        return total
-    
-    def evaluateOneStep(self, timestep, placementById):
-        self.createGhostEnv(timestep)
-        self.setPlacement(placementById)
-        return self.evaluatePlacement()
-
 class Leader(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
         super().__init__(agentID, birthday, cell, configuration)
         # Special leader agent should be configured to be immortal and omniscient
         self.fertilityFactor = 0.0
         self.follower = False
-        self.grid = [[[] for j in range(self.cell.environment.height)] for i in range(self.cell.environment.width)]
         self.agentPlacements = {}
         self.leader = True
         self.maxAge = -1
         self.movement = 0
+        self.recursionLimit = 100000
         self.spice = sys.maxsize
         self.spiceMetabolism = 0
         self.sugar = sys.maxsize
@@ -563,7 +289,6 @@ class Leader(agent.Agent):
 
         self.plannedTimestep = None
         self.environment = self.cell.environment
-        self.ghostEval = GhostEvaluator(self.environment)
         self.lastDecisionTime = 0.0
         self.lastPlacementOptions = 0
 
@@ -590,11 +315,76 @@ class Leader(agent.Agent):
         self.lastMovedTimestep = timestep
         return
 
-    def findBestCell(self):
-        timestep = self.environment.sugarscape.timestep
-        if self.plannedTimestep != timestep:
-            self.planPlacements(timestep)
-        return self.cell   # leader stays put
+    def findBestCell(self, predeterminedBestCell=None):
+        self.resetForTimestep()
+        defaultRecursionLimit = sys.getrecursionlimit()
+        sys.setrecursionlimit(self.recursionLimit)
+        agents = [agent for agent in copy.deepcopy(self.cell.environment.sugarscape.agents) if agent.isAlive() == True]
+
+        # Use a list of counters to iterate through the search space one possible placement at a time
+        cellRanges = []
+        counters = []
+        for agent in agents:
+            cellsInRange = list(agent.cellsInRange.keys()) if len(agent.cellsInRange) > 0 else [agent.cell]
+            cellRanges.append(len(cellsInRange) - 1)
+            counters.append(0)
+
+        attempts = 0
+        maxAttempts = sys.maxsize
+        bestPlacement = {}
+        bestScore = (-1 * sys.maxsize) - 1
+
+        # Ensure each simulated timestep uses the same random numbers
+        randomNumberReset = random.getstate()
+        searchSpaceExhausted = False
+        while attempts < maxAttempts and searchSpaceExhausted == False:
+            possiblePlacement = {"placement": {}, "score": 0}
+            futurescape = copy.deepcopy(self.cell.environment.sugarscape)
+            random.setstate(randomNumberReset)
+
+            counterIndex = -1
+            for agent in agents:
+                # If agent is not in the copied environment, skip its consideration
+                agent = next(a for a in futurescape.agents if a.ID == agent.ID)
+                if agent == None:
+                    continue
+                counterIndex += 1
+                if agent.isAlive() == False:
+                    continue
+                agentPremoveIndex = counters[counterIndex]
+                cellsInRange = list(agent.cellsInRange.keys()) if len(agent.cellsInRange) > 0 else [agent.cell]
+                premove = cellsInRange[agentPremoveIndex]
+                agent.doTimestep(futurescape.timestep, premove)
+                currCell = agent.cell
+                if currCell == None:
+                    continue
+                possiblePlacement["placement"][agent.ID] = self.cell.environment.findCell(agent.cell.x, agent.cell.y)
+            futurescape.updateRuntimeStats()
+            possiblePlacement["score"] = futurescape.runtimeStats["meanHappiness"]
+            if possiblePlacement["score"] > bestScore:
+                bestScore = possiblePlacement["score"]
+                bestPlacement = possiblePlacement["placement"]
+
+            #Update counter indices
+            carry = 1
+            for i in range(-1, -1 * (len(counters) + 1), -1):
+                if carry > 0:
+                    counters[i] += carry
+                    carry = 0
+                if counters[i] > cellRanges[i]:
+                    counters[i] = 0
+                    carry = 1
+            # If there is a carry out on the last counter, all placements in the search space have been considered
+            if carry == 1 and counters[0] == 0:
+                searchSpaceExhausted = True
+            attempts += 1
+
+        self.agentPlacements = bestPlacement
+        random.setstate(randomNumberReset)
+        sys.setrecursionlimit(defaultRecursionLimit)
+
+        # Leader agent should not move
+        return self.cell
 
     def findBestCellForAgent(self, agent):
         timestep = self.environment.sugarscape.timestep
@@ -820,7 +610,7 @@ class Leader(agent.Agent):
                 cell = a.cell
             self.agentPlacements[a.ID] = cell
 
-    def bruteforcePlacementsGhost(self, agents, timestep):
+    def bruteforcePlacements(self, agents, timestep):
         decisionStart = time.perf_counter() # Start the timer
         optionsEvaluated = 0
         bestIndex = -1

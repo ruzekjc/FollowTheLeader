@@ -7,6 +7,7 @@ import condition
 import environment
 import ethics
 
+import copy
 import getopt
 import hashlib
 import json
@@ -29,6 +30,8 @@ class Sugarscape:
         environmentConfiguration = {"equator": configuration["environmentEquator"],
                                     "globalMaxSpice": configuration["environmentMaxSpice"],
                                     "globalMaxSugar": configuration["environmentMaxSugar"],
+                                    "ageistAbsoluteRanges": configuration["environmentAgeistAbsoluteRanges"],
+                                    "ageistRelativeRange": configuration["environmentAgeistRelativeRange"],
                                     "inGroupRaces": configuration["environmentInGroupRaces"],
                                     "maxCombatLoot": configuration["environmentMaxCombatLoot"],
                                     "neighborhoodMode": configuration["neighborhoodMode"],
@@ -87,7 +90,7 @@ class Sugarscape:
                              "remainingRaces": self.configuration["environmentMaxRaces"], "remainingTribes": self.configuration["environmentMaxTribes"],
                              "sickAgents": 0, "carryingCapacity": 0, "meanDeathsPercentage": 0, "sickAgentsPercentage": 0, "meanSelfishness": 0,
                              "diseaseEffectiveReproductionRate": 0, "diseaseIncidence": 0, "diseasePrevalence": 0, "agentLastMoveOptimalityPercentage": 0, "meanNeighbors": 0,
-                             "meanMoveRank": 0, "meanMoveDifferenceFromOptimal": 0, "meanValidMoves": 0
+                             "meanMoveRank": 0, "meanMoveDifferenceFromOptimal": 0, "meanValidMoves": 0, "totalHappiness": 0
                              }
         self.graphStats = {"ageBins": [], "sugarBins": [], "spiceBins": [], "lorenzCurvePoints": [], "meanTribeTags": [],
                            "maxSugar": 0, "maxSpice": 0, "maxWealth": 0}
@@ -119,23 +122,17 @@ class Sugarscape:
                                                  }
             self.runtimeStats.update(self.groupInteractionRuntimeStats)
 
-    def __getstate__(self):
-        state = self.__dict__.copy()
-        # gui holds tkinter objects and cant be deepcopied
-        state["gui"] = None
-
-        # remove open file handles (TextIOWrapper etc)
-        for k, v in list(state.items()):
-            if isinstance(v, io.IOBase):
-                state[k] = None
-            # logging objects often hold streams too
-            if isinstance(v, logging.Logger):
-                state[k] = None
-
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
+    def __deepcopy__(self, memo):
+        selfClass = self.__class__
+        result = selfClass.__new__(selfClass)
+        memo[id(self)] = result
+        skips = ["gui", "log", "agentLog", "agentLeader"]
+        for key,value in self.__dict__.items():
+            if key not in skips:
+                setattr(result, key, copy.deepcopy(value, memo))
+            else:
+                setattr(result, key, None)
+        return result
 
     def addAgent(self, agent):
         self.bornAgents.append(agent)
@@ -212,31 +209,14 @@ class Sugarscape:
             agentConfiguration = self.agentEndowments[self.agentEndowmentIndex % len(self.agentEndowments)]
             self.agentEndowmentIndex += 1
             agentID = self.generateAgentID()
-
-            isLeaderSpawn = (self.configuration['agentLeader'] == True and self.agentLeader is None)
-
-            if isLeaderSpawn:
-
-                cornerCell = self.environment.grid[0][0]
-                # If corner is occupied, find the first empty cell scanning from top left
-                if cornerCell.agent is not None:
-                    found = None
-                    for y in range(self.environment.height):
-                        for x in range(self.environment.width):
-                            c = self.environment.grid[x][y]
-                            if c.agent is None:
-                                found = c
-                                break
-                        if found is not None:
-                            break
-                    cornerCell = found if found is not None else cornerCell
-
-                placementCell = cornerCell
+            a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
+            if self.configuration["agentLeader"] == True and self.agentLeader == None:
                 a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
+                a.gotoCell(self.environment.dummyCell)
                 self.agentLeader = a
-            else:
-                a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
-                dm = agentConfiguration['decisionModel']
+                self.environment.dummyCell.agent = a
+                a.findCellsInRange()
+                continue
 
                 # If using a different decision model, replace new agent with instance of child class
                 if "altruist" in agentConfiguration["decisionModel"]:
@@ -370,6 +350,10 @@ class Sugarscape:
     def configureEnvironment(self, maxSugar, maxSpice, sugarPeaks, spicePeaks, environmentFile=None):
         height = self.environment.height
         width = self.environment.width
+        # Dummy cell for debugging and for leader agent
+        dummyCell = cell.Cell(-1, -1, self.environment)
+        self.environment.dummyCell = dummyCell
+
         if environmentFile == None:
             for i in range(width):
                 for j in range(height):
@@ -597,6 +581,7 @@ class Sugarscape:
         configs = self.configuration
         aggressionFactor = configs["agentAggressionFactor"]
         baseInterestRate = configs["agentBaseInterestRate"]
+        decisionModelAgeismFactor = configs["agentDecisionModelAgeismFactor"]
         decisionModelFactor = configs["agentDecisionModelFactor"]
         decisionModelLookaheadDiscount = configs["agentDecisionModelLookaheadDiscount"]
         decisionModelLookaheadFactor = configs["agentDecisionModelLookaheadFactor"]
@@ -610,7 +595,6 @@ class Sugarscape:
         femaleFertilityAge = configs["agentFemaleFertilityAge"]
         femaleInfertilityAge = configs["agentFemaleInfertilityAge"]
         fertilityFactor = configs["agentFertilityFactor"]
-        follower = configs["agentLeader"]
         immuneSystemLength = configs["agentImmuneSystemLength"]
         inheritancePolicy = configs["agentInheritancePolicy"]
         lendingFactor = configs["agentLendingFactor"]
@@ -643,6 +627,7 @@ class Sugarscape:
 
         configurations = {"aggressionFactor": {"endowments": [], "curr": aggressionFactor[0], "min": aggressionFactor[0], "max": aggressionFactor[1]},
                           "baseInterestRate": {"endowments": [], "curr": baseInterestRate[0], "min": baseInterestRate[0], "max": baseInterestRate[1]},
+                          "decisionModelAgeismFactor": {"endowments": [], "curr": decisionModelAgeismFactor[0], "min": decisionModelAgeismFactor[0], "max": decisionModelAgeismFactor[1]},
                           "decisionModelFactor": {"endowments": [], "curr": decisionModelFactor[0], "min": decisionModelFactor[0], "max": decisionModelFactor[1]},
                           "decisionModelLookaheadDiscount": {"endowments": [], "curr": decisionModelLookaheadDiscount[0], "min": decisionModelLookaheadDiscount[0], "max": decisionModelLookaheadDiscount[1]},
                           "decisionModelRacismFactor": {"endowments": [], "curr": decisionModelRacismFactor[0], "min": decisionModelRacismFactor[0], "max": decisionModelRacismFactor[1]},
@@ -752,7 +737,7 @@ class Sugarscape:
                               "immuneSystem": immuneSystems.pop(), "inheritancePolicy": inheritancePolicy,
                               "decisionModel": decisionModels.pop(), "decisionModelLookaheadFactor": decisionModelLookaheadFactor,
                               "movementMode": movementMode, "neighborhoodMode": neighborhoodMode, "visionMode": visionMode,
-                              "depressionFactor": depressionFactors[i], "follower": follower}
+                              "depressionFactor": depressionFactors[i], "follower": True}
             for config in configurations:
                 # If sexes are enabled, ensure proper fertility and infertility ages are set
                 if sexes[i] == "female" and config == "femaleFertilityAge":
@@ -1322,6 +1307,9 @@ class Sugarscape:
                 continue
             diseasePrevalence += len(disease.infected)
 
+        # Aggregated metrics captured here before dividing by population size
+        totalHappiness = meanHappiness
+
         if numAgents > 0:
             agentMeanTimeToLive = round(agentMeanTimeToLive / numAgents, 2)
             agentWealthBurnRate = round(agentWealthBurnRate / numAgents, 2)
@@ -1385,6 +1373,7 @@ class Sugarscape:
             minWealth = 0
             remainingRaces = 0
             remainingTribes = 0
+            totalHappiness = 0
             tradeVolume = 0
             diseaseEffectiveReproductionRate = 0
 
@@ -1415,7 +1404,7 @@ class Sugarscape:
                         "meanMoveRank": meanMoveRank, "meanNeighbors": meanNeighbors, "meanSelfishness": meanSelfishness,
                         "meanSocialHappiness": meanSocialHappiness, "meanTradePrice": meanTradePrice, "meanWealth": meanWealth,
                         "meanWealthHappiness": meanWealthHappiness, "meanValidMoves": meanValidMoves, "meanVision": meanVision, "minWealth": minWealth,
-                        "population": numAgents, "sickAgents": sickAgents, 
+                        "population": numAgents, "sickAgents": sickAgents, "totalHappiness": totalHappiness,
                         "remainingRaces": remainingRaces, 
                         "remainingTribes": remainingTribes,
                         "tradeVolume": tradeVolume, "meanDeathsPercentage": meanDeathsPercentage, "sickAgentsPercentage": sickAgentsPercentage,
@@ -1570,10 +1559,10 @@ def sortConfigurationTimeframes(configuration, timeframe):
     return config
 
 def verifyConfiguration(configuration):
-    negativesAllowed = ["agentDecisionModelRacismFactor", "agentDecisionModelSexismFactor", "agentDecisionModelTribalFactor", "agentMaxAge", "agentSelfishnessFactor"]
+    negativesAllowed = ["agentDecisionModelAgeismFactor", "agentDecisionModelRacismFactor", "agentDecisionModelSexismFactor", "agentDecisionModelTribalFactor", "agentMaxAge", "agentSelfishnessFactor"]
     negativesAllowed += ["diseaseAggressionPenalty", "diseaseFertilityPenalty", "diseaseFriendlinessPenalty", "diseaseHappinessPenalty", "diseaseMovementPenalty"]
     negativesAllowed += ["diseaseSpiceMetabolismPenalty", "diseaseSugarMetabolismPenalty", "diseaseTimeframe", "diseaseVisionPenalty"]
-    negativesAllowed += ["environmentEquator", "environmentPollutionDiffusionTimeframe", "environmentPollutionTimeframe", "environmentMaxSpice", "environmentMaxSugar"]
+    negativesAllowed += ["environmentAgeistAbsoluteRanges", "environmentAgeistRelativeRange", "environmentEquator", "environmentPollutionDiffusionTimeframe", "environmentPollutionTimeframe", "environmentMaxSpice", "environmentMaxSugar"]
     negativesAllowed += ["interfaceHeight", "interfaceWidth", "seed", "timesteps"]
     timeframes = ["diseaseTimeframe", "environmentPollutionDiffusionTimeframe", "environmentPollutionTimeframe"]
     negativeFlag = 0
@@ -1597,7 +1586,8 @@ def verifyConfiguration(configuration):
                 configValue = 0
                 negativeFlag += 1
     if negativeFlag > 0:
-        print(f"Detected negative values provided for {negativeFlag} option(s). Setting these values to zero.")
+        if "all" in configuration["debugMode"] or "sugarscape" in configuration["debugMode"]:
+            print(f"Detected negative values provided for {negativeFlag} option(s). Setting these values to zero.")
 
     # If no specific disease is tracked, revert to generic sick experimental group
     if configuration["experimentalGroup"] != None and "disease" in configuration["experimentalGroup"]:
@@ -1658,6 +1648,16 @@ def verifyConfiguration(configuration):
         configuration["timesteps"] = sys.maxsize
 
     # Ensure infinitely-lived agents are properly initialized
+    if configuration["agentDecisionModelAgeismFactor"][0] < 0:
+        if configuration["agentDecisionModelAgeismFactor"][1] != -1:
+            if "all" in configuration["debugMode"] or "agent" in configuration["debugMode"]:
+                print(f"Cannot have agent ageism factor range of {configuration['agentDecisionModelAgeismFactor']}. Disabling agent ageism factor.")
+        configuration["agentDecisionModelAgeismFactor"] = [-1, -1]
+    elif configuration["agentDecisionModelAgeismFactor"][1] > 1:
+        if "all" in configuration["debugMode"] or "agent" in configuration["debugMode"]:
+            print(f"Cannot have agent maximum ageism factor of {configuration['agentDecisionModelAgeismFactor'][1]}. Setting agent maximum ageism factor to 1.0.")
+        configuration["agentDecisionModelAgeismFactor"][1] = 1
+
     if configuration["agentDecisionModelRacismFactor"][0] < 0:
         if configuration["agentDecisionModelRacismFactor"][1] != -1:
             if "all" in configuration["debugMode"] or "agent" in configuration["debugMode"]:
@@ -1770,6 +1770,26 @@ def verifyConfiguration(configuration):
             print(f"Cannot provide {configuration['environmentMaxTribes']} tribes. Allocating maximum of {maxColors}.")
         configuration["environmentMaxTribes"] = maxColors
 
+    # Ensure no negative values for ageism absolute ranges
+    for ageRange in configuration["environmentAgeistAbsoluteRanges"][:]:
+        minAge, maxAge = ageRange
+        if minAge < -1 or maxAge < -1 or (minAge > maxAge and maxAge != -1):
+            if "all" in configuration["debugMode"] or "environment" in configuration["debugMode"]:
+                print(f"Cannot have ageism absolute range of [{minAge}, {maxAge}]. Removing range from list.")
+            configuration["environmentAgeistAbsoluteRanges"].remove(ageRange)
+
+    # Ensure no negative value for ageism relative range
+    if configuration["environmentAgeistRelativeRange"] < 0 and configuration["environmentAgeistRelativeRange"] != -1:
+        if "all" in configuration["debugMode"] or "environment" in configuration["debugMode"]:
+            print(f"Cannot have negative ageism relative range. Disabling environmentAgeistRelativeRange.")
+        configuration["environmentAgeistRelativeRange"] = -1
+    
+    # If both environmentAgeistAbsoluteRanges and environmentAgeistRelativeRange are disabled, ageism must be disabled since there is no mechanism for determining in-grouping
+    if configuration["environmentAgeistAbsoluteRanges"] == [] and configuration["environmentAgeistRelativeRange"] == -1 and configuration["agentDecisionModelAgeismFactor"] != [-1, -1]:
+        if "all" in configuration["debugMode"] or "agent" in configuration["debugMode"]:
+            print(f"Cannot have ageism without in-grouping mechanism. Disabling agentDecisionModelAgeismFactor.")
+        configuration["agentDecisionModelAgeismFactor"] = [-1, -1]
+
     if any(race >= configuration["environmentMaxRaces"] for race in configuration["environmentInGroupRaces"]):
         if "all" in configuration["debugMode"] or "environment" in configuration["debugMode"]:
             print(f"Cannot have in-group races greater than total races. Removing in-group races greater than or equal to {configuration['environmentMaxRaces']}")
@@ -1790,9 +1810,6 @@ def verifyConfiguration(configuration):
 
     if configuration["agentLogfile"] == "":
         configuration["agentLogfile"] = None
-
-    if configuration["seed"] == -1:
-        configuration["seed"] = random.randrange(sys.maxsize)
 
     recognizedDebugModes = ["agent", "all", "cell", "disease", "environment", "ethics", "none", "sugarscape"]
     validModes = True
@@ -1833,12 +1850,18 @@ def verifyConfiguration(configuration):
         configuration["experimentalGroup"] = None
     return configuration
 
+def verifyRandomSeed(configuration):
+    if type(configuration["seed"]) != int or configuration["seed"] == -1:
+        configuration["seed"] = random.randrange(sys.maxsize)
+    random.seed(configuration["seed"])
+
 if __name__ == "__main__":
     # Set default values for simulation configuration
     configuration = {"agentAggressionFactor": [0, 0],
                      "agentBaseInterestRate": [0.0, 0.0],
                      "agentDecisionModels": ["none"],
                      "agentDecisionModel": None,
+                     "agentDecisionModelAgeismFactor": [-1, -1],
                      "agentDecisionModelFactor": [0, 0],
                      "agentDecisionModelLookaheadDiscount": [0, 0],
                      "agentDecisionModelLookaheadFactor": [0],
@@ -1897,6 +1920,8 @@ if __name__ == "__main__":
                      "diseaseTimeframe": [0, 0],
                      "diseaseTransmissionChance": [1.0, 1.0],
                      "diseaseVisionPenalty": [0, 0],
+                     "environmentAgeistAbsoluteRanges": [],
+                     "environmentAgeistRelativeRange": -1,
                      "environmentEquator": -1,
                      "environmentFile": None,
                      "environmentHeight": 50,
@@ -1945,10 +1970,10 @@ if __name__ == "__main__":
                      "timesteps": 200
                      }
     configuration = parseOptions(configuration)
+    verifyRandomSeed(configuration)
     configuration = verifyConfiguration(configuration)
     if configuration["headlessMode"] == False:
         import gui
-    random.seed(configuration["seed"])
     S = Sugarscape(configuration)
     if configuration["profileMode"] == True:
         import cProfile
