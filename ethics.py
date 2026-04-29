@@ -270,12 +270,12 @@ class Bentham(agent.Agent):
         return Bentham(childID, birthday, cell, configuration)
 
 HAPPINESSWEIGHTS = {
-    "foodSecurity": 0.30,
-    "health":       0.20,
-    "wealth":       0.15,
-    "conflict":     0.10,
-    "social":       0.10,
-    "family":       0.15,
+    "foodSecurity": 0.05,
+    "health":       0.05,
+    "wealth":       0.05,
+    "conflict":     0.05,
+    "social":       0.05,
+    "family":       0.75
 }
 class Leader(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
@@ -703,6 +703,7 @@ class Leader(agent.Agent):
             idx, optIdx, placement, usedCells = stack.pop()
 
             if idx == n:
+                optionsEvaluated += 1
                 score = sum(self.findWeightedHappiness(a, self.environment.grid[placement[a.ID][0]][placement[a.ID][1]])
                     for a in ordered if a.ID in placement)
                 viable = self.countViableAgents(ordered, placement)

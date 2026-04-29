@@ -91,6 +91,15 @@ def generatePlots(config, models, totalTimesteps, dataset, statistic, experiment
     if "wealthHappiness" in config["plots"]:
         print(f"Generating {statistic} wealth happiness plot")
         generateSimpleLinePlot(models, dataset, totalTimesteps, f"{statistic}_total_wealth_happiness.pdf", "meanWealthHappiness", f"{titleStatistic} Wealth Happiness", "center right", percentage=False, experimentalGroup=experimentalGroup)
+    if "foodSecurityHappiness" in config["plots"]:
+        print(f"Generating {statistic} food security happiness plot")
+        generateSimpleLinePlot(models, dataset, totalTimesteps, f"{statistic}_food_security_happiness.pdf", "meanFoodSecurityHappiness", f"{titleStatistic} Food Security Happiness", "center right", percentage=False, experimentalGroup=experimentalGroup)
+    if "spaceHappiness" in config["plots"]:
+        print(f"Generating {statistic} space happiness plot")
+        generateSimpleLinePlot(models, dataset, totalTimesteps, f"{statistic}_space_happiness.pdf", "meanSpaceHappiness", f"{titleStatistic} Space Happiness", "center right", percentage=False, experimentalGroup=experimentalGroup)
+    if "happinessBreakdown" in config["plots"]:
+        print(f"Generating {statistic} happiness breakdown plot")
+        generateHappinessBreakdownPlot(models, dataset, totalTimesteps, f"{statistic}_happiness_breakdown.pdf", statistic)
 
 def generateSimpleLinePlot(models, dataset, totalTimesteps, outfile, column, label, positioning, percentage=False, experimentalGroup=None):
     matplotlib.pyplot.rcParams["font.family"] = "serif"
@@ -128,6 +137,36 @@ def generateSimpleLinePlot(models, dataset, totalTimesteps, outfile, column, lab
     if percentage == True:
         axes.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter())
     figure.savefig(outfile, format="pdf", bbox_inches="tight")
+
+def generateHappinessBreakdownPlot(models, dataset, totalTimesteps, outfile, statistic):
+    matplotlib.pyplot.rcParams["font.family"] = "serif"
+    matplotlib.pyplot.rcParams["font.size"] = 18
+    components = {
+        "meanHappiness":              ("Total",         "black",   2.0,  "solid"),
+        "meanFoodSecurityHappiness":  ("Food Security", "green",   1.2,  "solid"),
+        "meanHealthHappiness":        ("Health",        "blue",    1.2,  "solid"),
+        "meanWealthHappiness":        ("Wealth",        "gold",    1.2,  "solid"),
+        "meanSocialHappiness":        ("Social",        "magenta", 1.2,  "solid"),
+        "meanFamilyHappiness":        ("Family",        "orange",  1.2,  "dashed"),
+        "meanConflictHappiness":      ("Conflict",      "red",     1.2,  "dashed"),
+        "meanSpaceHappiness":         ("Space",         "teal",    1.2,  "dashed"),
+    }
+    x = [i for i in range(totalTimesteps + 1)]
+    for model in dataset:
+        figure, axes = matplotlib.pyplot.subplots(figsize=(10, 6))
+        modelStrings = {"bentham": "Utilitarian", "none": "Raw Sugarscape", "unknown": "Unknown"}
+        modelLabel = modelStrings.get(model, model)
+        axes.set(xlabel="Timestep", ylabel="Happiness", xlim=[0, totalTimesteps],
+                    title=f"{statistic.title()} Happiness Components — {modelLabel}")
+        axes.axhline(0, color="grey", linewidth=0.8, linestyle="dotted")
+        for column, (label, color, lw, ls) in components.items():
+            if column in dataset[model]["aggregates"]:
+                y = [dataset[model]["aggregates"][column][i] for i in range(totalTimesteps + 1)]
+                axes.plot(x, y, color=color, label=label, linewidth=lw, linestyle=ls)
+        axes.legend(loc="upper right", labelspacing=0.1, frameon=False, fontsize=14)
+        modelFile = outfile.replace(".pdf", f"_{model}.pdf")
+        figure.savefig(modelFile, format="pdf", bbox_inches="tight")
+        matplotlib.pyplot.close(figure)
 
 def parseDataset(path, dataset, totalTimesteps, statistic, skipExtinct=False):
     encodedDir = os.fsencode(path)

@@ -17,6 +17,7 @@ import re
 import sys
 import io
 import logging
+import os
 
 class Sugarscape:
     def __init__(self, configuration):
@@ -211,13 +212,18 @@ class Sugarscape:
             self.agentEndowmentIndex += 1
             agentID = self.generateAgentID()
             a = agent.Agent(agentID, self.timestep, placementCell, agentConfiguration)
+
             if self.configuration["agentLeader"] == True and self.agentLeader == None:
-                a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
-                a.gotoCell(self.environment.dummyCell)
-                self.agentLeader = a
-                self.environment.dummyCell.agent = a
-                a.findCellsInRange()
-                continue
+                    a = ethics.Leader(agentID, self.timestep, placementCell, agentConfiguration)
+                    a.gotoCell(self.environment.dummyCell)
+                    self.agentLeader = a
+                    self.environment.dummyCell.agent = a
+                    a.findCellsInRange()
+                    continue
+            if self.agentLeader is not None:
+                leaderDecisionTime = self.agentLeader.lastDecisionTime
+                leaderPlacementOptions = self.agentLeader.lastPlacementOptions
+                leaderAgent = self.agentLeader
 
                 # If using a different decision model, replace new agent with instance of child class
                 if "altruist" in agentConfiguration["decisionModel"]:
@@ -411,9 +417,6 @@ class Sugarscape:
             self.removeDeadAgents()
             self.replaceDeadAgents()
             self.updateRuntimeStats()
-            if self.gui != None:
-                self.updateGraphStats()
-                self.gui.doTimestep()
             # If final timestep, do not write to log to cleanly close JSON array log structure
             if self.timestep != self.maxTimestep and len(self.agents) > 0:
                 self.writeToLog(self.log)
@@ -422,6 +425,9 @@ class Sugarscape:
                     self.startLog(self.agentLog)
                 self.writeToLog(self.agentLog)
                 self.agentRuntimeStats = []
+            if self.gui != None:
+                self.updateGraphStats()
+                self.gui.doTimestep()
 
     def endLog(self, log):
         if log == None:
@@ -474,6 +480,27 @@ class Sugarscape:
         self.endLog(self.agentLog)
         if "all" in self.debug or "sugarscape" in self.debug:
             print(str(self))
+        if self.configuration.get("plot", False):
+            import shutil, subprocess, os, sys
+            plotScriptPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots", "plot.py")
+            plotDir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots", "")
+            os.makedirs(plotDir, exist_ok=True)
+            model = self.configuration["agentDecisionModels"][0]
+            if type(model) == list:
+                model = '_'.join(model)
+            logSrc = self.configuration["logfile"]
+            logDest = f"{plotDir}{model}1.json"
+            print(f"[plot] copying {logSrc} -> {logDest}")
+            shutil.copy(logSrc, logDest)
+            plotConfPath = os.path.abspath(sys.argv[sys.argv.index("--conf") + 1])
+            print(f"[plot] running plot.py --path {plotDir} --conf {plotConfPath}")
+            result = subprocess.run(
+                [sys.executable, plotScriptPath, "--path", plotDir, "--conf", plotConfPath],
+                cwd=plotDir
+            )
+            print(result.stdout)
+            if result.returncode != 0:
+                print(f"[plot] ERROR: plot.py exited with an error")
         exit(0)
 
     def findActiveQuadrants(self):
@@ -1117,14 +1144,13 @@ class Sugarscape:
         meanMoveRank = 0
         meanMoveDifferenceFromOptimal = 0
 
+        if self.agentLeader is not None:
+                leaderDecisionTime = self.agentLeader.lastDecisionTime
+                leaderPlacementOptions = self.agentLeader.lastPlacementOptions
+                leaderAgent = self.agentLeader
+
         for agent in self.agents:
             if group != None and agent.isInGroup(group, notInGroup) == False:
-                continue
-
-            if hasattr(agent, "lastDecisionTime"):
-                leaderDecisionTime = agent.lastDecisionTime
-                leaderPlacementOptions = agent.lastPlacementOptions
-                leaderAgent = agent
                 continue
 
             agentTimeToLive = agent.findTimeToLive()
@@ -1250,18 +1276,16 @@ class Sugarscape:
         for agent in self.deadAgents:
             if group != None and agent.isInGroup(group, notInGroup) == False:
                 continue
-            # If agent moved this timestep but died, count its movement optimality
-            if agent.timestep == self.timestep:
-                if agent.lastMoveOptimal == True:
-                    agentLastMoveOptimalityPercentage += 1
+            if agent.lastMoveOptimal == True:
+                agentLastMoveOptimalityPercentage += 1
                 agentMoves += 1
             agentWealth = agent.sugar + agent.spice
-            meanAgeAtDeath += agent.age
             agentWealthCollected += agentWealth - (agent.lastSugar + agent.lastSpice)
-            agentAgingDeaths += 1 if agent.causeOfDeath == "aging" else 0
-            agentCombatDeaths += 1 if agent.causeOfDeath == "combat" else 0
-            agentDiseaseDeaths += 1 if agent.diseaseDeath == True else 0
-            agentStarvationDeaths += 1 if agent.causeOfDeath == "starvation" else 0
+            if agent.timestep == self.timestep:
+                agentAgingDeaths += 1 if agent.causeOfDeath == "aging" else 0
+                agentCombatDeaths += 1 if agent.causeOfDeath == "combat" else 0
+                agentDiseaseDeaths += 1 if agent.diseaseDeath == True else 0
+                agentStarvationDeaths += 1 if agent.causeOfDeath == "starvation" else 0
             if group != None and agent.isInGroup(group):
                 combatExperimentalToControl += agent.combatWithControlGroup
                 combatExperimentalToExperimental += agent.combatWithExperimentalGroup
@@ -1284,7 +1308,9 @@ class Sugarscape:
                 reproductionControlToExperimental += agent.reproductionWithExperimentalGroup
                 tradeControlToControl += agent.tradeWithControlGroup
                 tradeControlToExperimental += agent.tradeWithExperimentalGroup
-            numDeadAgents += 1
+            if agent.timestep == self.timestep:
+                meanAgeAtDeath += agent.age
+                numDeadAgents += 1
 
             for disease in agent.diseases:
                 # If in the experimental group for a specific disease, skip other diseases
@@ -1515,8 +1541,8 @@ def parseConfiguration(configFile, configuration):
 
 def parseOptions(configuration):
     commandLineArgs = sys.argv[1:]
-    shortOptions = "c:h:"
-    longOptions = ["conf=", "help"]
+    shortOptions = "c:l:s:h:"
+    longOptions = ["conf=", "help","plot"]
     try:
         args, vals = getopt.getopt(commandLineArgs, shortOptions, longOptions)
     except getopt.GetoptError as err:
@@ -1532,6 +1558,8 @@ def parseOptions(configuration):
             parseConfiguration(currVal, configuration)
         elif currArg in ("-h", "--help"):
             printHelp()
+        elif currArg in ("--plot",):
+            configuration["plot"] = True
     return configuration
 
 def printHelp():
@@ -1966,6 +1994,7 @@ if __name__ == "__main__":
                      "logfile": None,
                      "logfileFormat": "json",
                      "neighborhoodMode": "vonNeumann",
+                     "plot": False,
                      "profileMode": False,
                      "screenshots": False,
                      "seed": -1,
