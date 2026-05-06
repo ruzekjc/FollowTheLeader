@@ -270,12 +270,13 @@ class Bentham(agent.Agent):
         return Bentham(childID, birthday, cell, configuration)
 
 HAPPINESSWEIGHTS = {
-    "foodSecurity": 0.05,
-    "health":       0.05,
-    "wealth":       0.05,
-    "conflict":     0.05,
-    "social":       0.05,
-    "family":       0.75
+    "foodSecurity": 0.30,
+    "health":       0.15,
+    "wealth":       0.15,
+    "conflict":     0.1,
+    "social":       0.1,
+    "family":       0.1,
+    "space":        0.1
 }
 class Leader(agent.Agent):
     def __init__(self, agentID, birthday, cell, configuration):
@@ -324,19 +325,33 @@ class Leader(agent.Agent):
         return
 
     def findBestCell(self, predeterminedBestCell=None):
-        self.resetForTimestep()
         defaultRecursionLimit = sys.getrecursionlimit()
         sys.setrecursionlimit(self.recursionLimit)
-        agents = [agent for agent in copy.deepcopy(self.cell.environment.sugarscape.agents) if agent.isAlive() == True]
+        agents = [agent for agent in copy.deepcopy(self.cell.environment.sugarscape.agents) if agent.isAlive() and not getattr(agent, "leader", False)]
+
+        for agent in agents:
+            realAgent = next((a for a in self.cell.environment.sugarscape.agents 
+                                if a.ID == agent.ID), None)
+            if realAgent:
+                agent.lastTimeToLive = realAgent.timeToLive
 
         # Use a list of counters to iterate through the search space one possible placement at a time
         cellRanges = []
         counters = []
+        agentCellOptions = []
         for agent in agents:
-            cellsInRange = list(agent.cellsInRange.keys()) if len(agent.cellsInRange) > 0 else [agent.cell]
-            cellRanges.append(len(cellsInRange) - 1)
+            if len(agent.cellsInRange) > 0:
+                opts = [c for c in agent.cellsInRange.keys()
+                        if c == agent.cell or not c.isOccupied()]
+            else:
+                opts = [agent.cell]
+            if not opts:
+                opts = [agent.cell]
+            agentCellOptions.append(opts)
+            cellRanges.append(len(opts) - 1)
             counters.append(0)
 
+        print(f"[Leader] Starting search, agents: {len(agents)}, counters: {cellRanges}")
         attempts = 0
         maxAttempts = sys.maxsize
         bestPlacement = {}
@@ -350,7 +365,12 @@ class Leader(agent.Agent):
             futurescape = copy.deepcopy(self.cell.environment.sugarscape)
             random.setstate(randomNumberReset)
 
+            for a in futurescape.agents:
+                # preserve existing cellsInRange instead of recomputing (ranges don't survive deepcopy)
+                a.findCellsInRange = lambda newCell=None, _a=a: _a.cellsInRange
+
             counterIndex = -1
+            usedCells = set()
             for agent in agents:
                 # If agent is not in the copied environment, skip its consideration
                 agent = next(a for a in futurescape.agents if a.ID == agent.ID)
@@ -361,14 +381,32 @@ class Leader(agent.Agent):
                     continue
                 agentPremoveIndex = counters[counterIndex]
                 cellsInRange = list(agent.cellsInRange.keys()) if len(agent.cellsInRange) > 0 else [agent.cell]
-                premove = cellsInRange[agentPremoveIndex]
+                premove = agentCellOptions[counterIndex][agentPremoveIndex]
+                premove = agent.cell.environment.findCell(premove.x, premove.y)
+                if (premove.x, premove.y) in usedCells:
+                    premove = agent.cell
+                usedCells.add((premove.x, premove.y))
                 agent.doTimestep(futurescape.timestep, premove)
                 currCell = agent.cell
                 if currCell == None:
                     continue
                 possiblePlacement["placement"][agent.ID] = self.cell.environment.findCell(agent.cell.x, agent.cell.y)
             futurescape.updateRuntimeStats()
-            possiblePlacement["score"] = futurescape.runtimeStats["meanHappiness"]
+            w = HAPPINESSWEIGHTS
+            living = [a for a in futurescape.agents if a.isAlive() and not getattr(a, "leader", False)]
+            if living:
+                possiblePlacement["score"] = sum(
+                    w["foodSecurity"] * a.foodSecurityHappiness +
+                    w["health"]       * a.healthHappiness +
+                    w["wealth"]       * a.wealthHappiness +
+                    w["conflict"]     * a.conflictHappiness +
+                    w["social"]       * a.socialHappiness +
+                    w["family"]       * a.familyHappiness +
+                    w["space"]        * a.spaceHappiness
+                    for a in living
+                ) / len(living)
+            else:
+                possiblePlacement["score"] = 0.0
             if possiblePlacement["score"] > bestScore:
                 bestScore = possiblePlacement["score"]
                 bestPlacement = possiblePlacement["placement"]
@@ -546,7 +584,8 @@ class Leader(agent.Agent):
             + w["social"]       * (self.predictedSocialFromPlacements(agent, cell, placementByCell)
                                     if placementByCell is not None
                                     else self.predictedSocialHappinessProxy(agent, cell))
-            + w["family"]       * agent.familyHappiness)
+            + w["family"]       * agent.familyHappiness
+            + w["space"]        * self.predictedSocialHappinessProxy(agent, cell))
 
     def predictedUtility(self, agent, cell, placementByCell=None):
         return self.findWeightedHappiness(agent, cell, placementByCell)
@@ -630,16 +669,7 @@ class Leader(agent.Agent):
 
     def planPlacements(self, timestep):
         self.resetForTimestep(timestep)
-        env = self.environment
-        agents = [a for a in env.sugarscape.agents if a.isAlive() and a != self]
-
-        bestAssign, bestScore = self.bruteforcePlacements(agents, timestep)
-
-        for a in agents:
-            cell = bestAssign.get(a.ID, a.cell)
-            if cell is None:
-                cell = a.cell
-            self.agentPlacements[a.ID] = cell
+        self.findBestCell()
 
     def bruteforcePlacements(self, agents, timestep):
         decisionStart = time.perf_counter() # Start the timer
